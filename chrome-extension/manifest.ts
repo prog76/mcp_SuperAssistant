@@ -38,7 +38,6 @@ const manifest = {
     '*://*.gemini.google.com/*',
     '*://*.aistudio.google.com/*',
     '*://*.openrouter.ai/*',
-    '*://*.google-analytics.com/*',
     '*://*.chat.deepseek.com/*',
     '*://*.t3.chat/*',
     '*://*.chat.mistral.ai/*',
