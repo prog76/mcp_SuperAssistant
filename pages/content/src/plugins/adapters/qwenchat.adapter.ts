@@ -26,19 +26,19 @@ export class QwenAdapter extends BaseAdapterPlugin {
   ];
 
   // CSS selectors for Qwen's UI elements
-  // Updated selectors based on current Qwen interface (Feb 2026 refresh)
+  // Updated selectors based on current Qwen interface (March 2026 - enhanced for auto-submit)
   private readonly selectors = {
-    // Primary chat input selectors - new message-input-textarea class
-    CHAT_INPUT: 'textarea.message-input-textarea, #chat-input, textarea.chat-input',
-    // Submit button selectors (multiple fallbacks) - new omni-button and ant-btn classes
-    SUBMIT_BUTTON: 'button.omni-button-content-btn, div.message-input-right-button-send button, button.send-button, div.chat-prompt-send-button button, #send-message-button',
+    // Primary chat input selectors - comprehensive coverage
+    CHAT_INPUT: 'textarea.message-input-textarea, #chat-input, textarea.chat-input, div[contenteditable="true"].chat-input, div[contenteditable="true"].message-input',
+    // Submit button selectors - comprehensive coverage for auto-submit
+    SUBMIT_BUTTON: 'button.omni-button-content-btn, div.message-input-right-button-send button, button.send-button, div.chat-prompt-send-button button, #send-message-button, button[aria-label="Send"], button[aria-label="发送"], button[type="submit"], .send-button, .chat-send-button, div.message-input-right-button > button:last-child, div.omni-button:has(svg), button:has(svg[data-icon="send"])',
     // File upload related selectors - new mode-select container
     FILE_UPLOAD_BUTTON: 'div.mode-select .ant-dropdown-trigger, div.mode-select-open, button.chat-prompt-upload-group-btn, div.upload-group button',
-    FILE_INPUT: 'input#filesUpload, input[type="file"][multiple]',
+    FILE_INPUT: 'input#filesUpload, input[type="file"][multiple], input[type="file"].file-input',
     // Main panel and container selectors - new message-input-container
     MAIN_PANEL: 'div.message-input-container, div.message-input-container-area, div.prompt-input-container',
     // Drop zones for file attachment
-    DROP_ZONE: 'textarea.message-input-textarea, textarea#chat-input, textarea.chat-input',
+    DROP_ZONE: 'textarea.message-input-textarea, textarea#chat-input, textarea.chat-input, div[contenteditable="true"].chat-input',
     // File preview elements
     FILE_PREVIEW: 'div.prompt-input-file-list',
     // Button insertion points (for MCP popover) - new message-input-right-button container
