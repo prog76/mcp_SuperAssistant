@@ -30,7 +30,8 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
   // The submit button is the nextElementSibling of the file input element
   private readonly selectors = {
     // Primary chat input selector - DeepSeek uses a textarea with placeholder="Message DeepSeek"
-    CHAT_INPUT: 'textarea[placeholder*="Message DeepSeek"], textarea.ds-scroll-area, textarea:not([type="hidden"])',
+    // Includes Chinese-locale placeholders and name="search" (from jcleng's fix for chinese UI)
+    CHAT_INPUT: 'textarea[name="search"], textarea[placeholder*="给 DeepSeek 发送消息"], textarea[placeholder*="Message DeepSeek"], textarea.ds-scroll-area, textarea:not([type="hidden"])',
     // Submit button: DeepSeek uses a button element as the next sibling of input[type="file"]
     // Based on reverse engineering: getSendButton() = document.querySelector('input[type="file"]')?.nextElementSibling
     SUBMIT_BUTTON: 'input[type="file"]',
