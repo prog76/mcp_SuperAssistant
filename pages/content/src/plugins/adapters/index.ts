@@ -16,7 +16,7 @@ export { DeepSeekAdapter } from './deepseek.adapter';
 export { T3ChatAdapter } from './t3chat.adapter';
 export { MistralAdapter } from './mistral.adapter';
 export { GitHubCopilotAdapter } from './ghcopilot.adapter';
-
+export { DoubaoAdapter } from './doubao.adapter';
 
 // Export types
 export type { 
