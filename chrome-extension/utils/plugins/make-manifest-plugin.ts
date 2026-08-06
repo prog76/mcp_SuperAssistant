@@ -51,6 +51,20 @@ export default (config: { outDir: string }): PluginOption => {
       addRefreshContentScript(manifest);
     }
 
+    // Add build timestamp for version tracking
+    const buildTimestamp = Date.now();
+    const buildDate = new Date(buildTimestamp).toISOString();
+
+    // Add version metadata to manifest
+    const manifestWithMeta = manifest as Manifest & {
+      version_name?: string;
+      build_timestamp?: number;
+      build_date?: string;
+    };
+    manifestWithMeta.version_name = `${manifest.version} (build ${buildTimestamp})`;
+    manifestWithMeta.build_timestamp = buildTimestamp;
+    manifestWithMeta.build_date = buildDate;
+
     writeFileSync(manifestPath, ManifestParser.convertManifestToString(manifest, IS_FIREFOX));
 
     const refreshFileString = readFileSync(refreshFilePath, 'utf-8');
@@ -60,6 +74,7 @@ export default (config: { outDir: string }): PluginOption => {
     }
 
     colorLog(`Manifest file copy complete: ${manifestPath}`, 'success');
+    colorLog(`[VERSION] Extension version: ${manifest.version} | Build: ${buildTimestamp} | Built: ${buildDate}`, 'Bright');
   };
 
   return {

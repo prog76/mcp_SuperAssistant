@@ -6,6 +6,26 @@ import { AutomationService } from '@src/services/automation.service';
 import { cn } from '@src/lib/utils';
 import { createLogger } from '@extension/shared/lib/logger';
 
+// Get version info from manifest
+const getVersionInfo = () => {
+  try {
+    const manifest = chrome.runtime.getManifest();
+    return {
+      version: manifest.version,
+      versionName: (manifest as any).version_name || manifest.version,
+      buildTimestamp: (manifest as any).build_timestamp,
+      buildDate: (manifest as any).build_date,
+    };
+  } catch {
+    return {
+      version: 'unknown',
+      versionName: 'unknown',
+      buildTimestamp: null,
+      buildDate: null,
+    };
+  }
+};
+
 // Default delay values in seconds
 
 const logger = createLogger('Settings');
@@ -18,12 +38,13 @@ const DEFAULT_DELAYS = {
 
 const Settings: React.FC = () => {
   const { preferences, updatePreferences } = useUserPreferences();
+  const versionInfo = getVersionInfo();
 
   // Handle delay input changes
   const handleDelayChange = (type: 'autoInsert' | 'autoSubmit' | 'autoExecute', value: string) => {
     const delay = Math.max(0, parseInt(value) || 0); // Ensure non-negative integer
     logger.debug(`${type} delay changed to: ${delay}`);
-    
+
     // Update user preferences store with the new delay
     updatePreferences({ [`${type}Delay`]: delay });
 
@@ -69,7 +90,7 @@ const Settings: React.FC = () => {
           <Typography variant="h4" className="mb-4 text-slate-700 dark:text-slate-300">
             Automation Delay Settings
           </Typography>
-          
+
           <div className="space-y-4">
             {/* Auto Insert Delay */}
             <div>
@@ -149,6 +170,44 @@ const Settings: React.FC = () => {
               />
               <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                 Delay before auto-executing functions
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Version Info Card */}
+      <Card className="border-slate-200 dark:border-slate-700 dark:bg-slate-800">
+        <CardContent className="p-4">
+          <Typography variant="h4" className="mb-3 text-slate-700 dark:text-slate-300">
+            Extension Version
+          </Typography>
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between items-center">
+              <span className="text-slate-600 dark:text-slate-400">Version:</span>
+              <span className="font-mono text-slate-800 dark:text-slate-200 font-medium">
+                {versionInfo.version}
+              </span>
+            </div>
+            {versionInfo.buildTimestamp && (
+              <div className="flex justify-between items-center">
+                <span className="text-slate-600 dark:text-slate-400">Build:</span>
+                <span className="font-mono text-slate-800 dark:text-slate-200 text-xs">
+                  {versionInfo.buildTimestamp}
+                </span>
+              </div>
+            )}
+            {versionInfo.buildDate && (
+              <div className="flex justify-between items-center">
+                <span className="text-slate-600 dark:text-slate-400">Built:</span>
+                <span className="font-mono text-slate-800 dark:text-slate-200 text-xs">
+                  {new Date(versionInfo.buildDate).toLocaleString()}
+                </span>
+              </div>
+            )}
+            <div className="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {versionInfo.buildTimestamp ? 'Compare build numbers to check for updates' : 'Build timestamp unavailable'}
               </p>
             </div>
           </div>

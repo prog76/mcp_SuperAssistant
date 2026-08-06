@@ -1,0 +1,4 @@
+services:
+  workspace:
+    volumes:
+      - ${HOME}/.cline:/home/vscode/.cline

@@ -24,7 +24,7 @@ export type AdapterCapability =
   | 'screenshot-capture'
   | 'dom-manipulation';
 
-export type PluginType = 
+export type PluginType =
   | 'sidebar'
   | 'website-adapter'
   | 'core-ui'
@@ -32,10 +32,10 @@ export type PluginType =
 
 export interface PluginContext {
   eventBus: PluginEventBus; // Use the defined PluginEventBus interface
-  stores: { 
+  stores: {
     // These 'any' types are placeholders as per original spec.
     // In a fully typed system, these would be specific store instances or slices.
-    app: any; 
+    app: any;
     connection: any;
     tool: any;
     ui: any;
@@ -86,6 +86,7 @@ export interface AdapterPlugin {
   insertText?(text: string, options?: { targetElement?: HTMLElement }): Promise<boolean>;
   submitForm?(options?: { formElement?: HTMLFormElement }): Promise<boolean>;
   attachFile?(file: File, options?: { inputElement?: HTMLInputElement }): Promise<boolean>;
+  isSubmitButtonEnabled?(): Promise<boolean>;
 
   // Optional capabilities
   captureScreenshot?(): Promise<string>;

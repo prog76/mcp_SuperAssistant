@@ -26,12 +26,14 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
   ];
 
   // CSS selectors for DeepSeek's UI elements
-  // Updated selectors based on current DeepSeek interface
+  // Updated selectors based on current DeepSeek interface (chat.deepseek.com)
+  // The submit button is the nextElementSibling of the file input element
   private readonly selectors = {
-    // Primary chat input selector - DeepSeek uses textarea elements
-    CHAT_INPUT: 'textarea[spellcheck="false"], textarea[data-gramm="false"], textarea[placeholder*="Ask"], textarea[placeholder*="Message DeepSeek"], textarea.chat-input, div[contenteditable="true"]',
-    // Submit button selectors (multiple fallbacks)
-    SUBMIT_BUTTON: 'button[aria-label*="Send"], button[data-testid="send-button"], button.send-button, svg.send-icon',
+    // Primary chat input selector - DeepSeek uses a textarea with placeholder="Message DeepSeek"
+    CHAT_INPUT: 'textarea[placeholder*="Message DeepSeek"], textarea.ds-scroll-area, textarea:not([type="hidden"])',
+    // Submit button: DeepSeek uses a button element as the next sibling of input[type="file"]
+    // Based on reverse engineering: getSendButton() = document.querySelector('input[type="file"]')?.nextElementSibling
+    SUBMIT_BUTTON: 'input[type="file"]',
     // File upload related selectors
     FILE_UPLOAD_BUTTON: 'button[aria-label*="attach"], button[aria-label*="file"], input[type="file"]',
     FILE_INPUT: 'input[type="file"]',
@@ -154,12 +156,12 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
       }
     }
   `;
-  
+
   // Setup state tracking
   private storeEventListenersSetup: boolean = false;
   private domObserversSetup: boolean = false;
   private uiIntegrationSetup: boolean = false;
-  
+
   // Instance tracking for debugging
   private static instanceCount = 0;
   private instanceId: number;
@@ -255,7 +257,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
     // Final cleanup
     this.cleanupUIIntegration();
     this.cleanupDOMObservers();
-    
+
     // Reset all setup flags
     this.storeEventListenersSetup = false;
     this.domObserversSetup = false;
@@ -299,7 +301,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
       if (targetElement.tagName === 'TEXTAREA') {
         const textarea = targetElement as HTMLTextAreaElement;
         const currentText = textarea.value;
-        
+
         // Append the text to the original value on a new line if there's existing content
         const newContent = currentText ? currentText + '\n\n' + text : text;
         textarea.value = newContent;
@@ -315,7 +317,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
       } else if (targetElement.getAttribute('contenteditable') === 'true') {
         // Handle contenteditable div
         const currentText = targetElement.textContent || '';
-        
+
         // Move cursor to the end
         const selection = window.getSelection();
         const range = document.createRange();
@@ -339,7 +341,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
         // Fallback for other element types
         const originalValue = (targetElement as any).value || targetElement.textContent || '';
         const newContent = originalValue ? originalValue + '\n\n' + text : text;
-        
+
         if ('value' in targetElement) {
           (targetElement as any).value = newContent;
         } else {
@@ -370,55 +372,66 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
   }
 
   /**
+   * Check if the send button is ready (arrow icon) vs still generating (box icon)
+   * DeepSeek's send button icon changes shape:
+   * - Arrow path (ready to send): starts with "M8.3125" or contains "L14.707" or "V15.0431"
+   * - Box path (generating): different path shape
+   */
+  async isSubmitButtonEnabled(): Promise<boolean> {
+    const fileInput = document.querySelector(this.selectors.SUBMIT_BUTTON) as HTMLInputElement;
+    if (!fileInput) return false;
+
+    const sendButton = fileInput.nextElementSibling as HTMLElement | null;
+    if (!sendButton) return false;
+
+    // Check if button is disabled
+    if (sendButton.hasAttribute('disabled') ||
+        (sendButton as HTMLButtonElement).disabled === true ||
+        sendButton.getAttribute('aria-disabled') === 'true') {
+      return false;
+    }
+
+    // Check SVG path to determine if it's arrow (ready) or box (generating)
+    const svgPath = sendButton.querySelector('svg path');
+    if (!svgPath) return false;
+
+    const d = svgPath.getAttribute('d') || '';
+    // Arrow icon = ready to send. Box icon = still generating.
+    const isArrow = /^M8\.3125/.test(d) || /L14\.707|V15\.0431/.test(d);
+    return isArrow;
+  }
+
+  /**
    * Submit the current text in the DeepSeek chat input
-   * Enhanced with multiple selector fallbacks and better error handling
+   * Finds the send button as nextElementSibling of input[type="file"] and clicks it
    */
   async submitForm(options?: { formElement?: HTMLFormElement }): Promise<boolean> {
     this.context.logger.debug('Attempting to submit DeepSeek chat input');
 
-    let submitButton: HTMLButtonElement | null = null;
-
-    // Try multiple selectors for better compatibility
-    const selectors = this.selectors.SUBMIT_BUTTON.split(', ');
-    for (const selector of selectors) {
-      submitButton = document.querySelector(selector.trim()) as HTMLButtonElement;
-      if (submitButton) {
-        this.context.logger.debug(`Found submit button using selector: ${selector.trim()}`);
-        break;
-      }
+    // DeepSeek's send button is the nextElementSibling of the file input
+    const fileInput = document.querySelector(this.selectors.SUBMIT_BUTTON) as HTMLInputElement;
+    if (!fileInput) {
+      this.context.logger.error('Could not find file input to locate send button');
+      this.emitExecutionFailed('submitForm', 'File input not found');
+      return false;
     }
 
+    const submitButton = fileInput.nextElementSibling as HTMLElement | null;
     if (!submitButton) {
-      this.context.logger.warn('Could not find DeepSeek submit button, trying Enter key press');
-      return this.tryEnterKeySubmission();
+      this.context.logger.error('Could not find send button next to file input');
+      this.emitExecutionFailed('submitForm', 'Send button not found');
+      return false;
     }
+
+    this.context.logger.debug('Found DeepSeek send button, clicking it');
 
     try {
-      // Check if the button is disabled
-      if (submitButton.disabled) {
-        this.context.logger.warn('DeepSeek submit button is disabled');
-        this.emitExecutionFailed('submitForm', 'Submit button is disabled');
-        return false;
-      }
-
-      // Check if the button is visible and clickable
-      const rect = submitButton.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) {
-        this.context.logger.warn('DeepSeek submit button is not visible');
-        this.emitExecutionFailed('submitForm', 'Submit button is not visible');
-        return false;
-      }
-
       // Click the submit button to send the message
       submitButton.click();
 
-      // Emit success event to the new event system
-      this.emitExecutionCompleted('submitForm', {
-        formElement: options?.formElement?.tagName || 'unknown'
-      }, {
+      this.emitExecutionCompleted('submitForm', {}, {
         success: true,
-        method: 'submitButton.click',
-        buttonSelector: selectors.find(s => document.querySelector(s.trim()) === submitButton)
+        method: 'submitButton.click'
       });
 
       this.context.logger.debug('DeepSeek chat input submitted successfully');
@@ -426,50 +439,6 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.context.logger.error(`Error submitting DeepSeek chat input: ${errorMessage}`);
-      this.emitExecutionFailed('submitForm', errorMessage);
-      return false;
-    }
-  }
-
-  /**
-   * Try to submit using Enter key press as fallback
-   */
-  private async tryEnterKeySubmission(): Promise<boolean> {
-    try {
-      // Find the chat input element
-      const chatInput = document.querySelector(this.selectors.CHAT_INPUT.split(', ')[0].trim()) as HTMLElement;
-      
-      if (!chatInput) {
-        this.context.logger.error('Cannot find chat input for Enter key submission');
-        this.emitExecutionFailed('submitForm', 'Chat input not found for Enter key submission');
-        return false;
-      }
-
-      // Create and dispatch Enter key event
-      const enterKeyEvent = new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true,
-      });
-
-      chatInput.focus();
-      chatInput.dispatchEvent(enterKeyEvent);
-
-      // Emit success event
-      this.emitExecutionCompleted('submitForm', {}, {
-        success: true,
-        method: 'enterKey',
-        fallback: true
-      });
-
-      this.context.logger.debug('DeepSeek chat input submitted using Enter key');
-      return true;
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.context.logger.error(`Error submitting DeepSeek chat input via Enter key: ${errorMessage}`);
       this.emitExecutionFailed('submitForm', errorMessage);
       return false;
     }
@@ -497,7 +466,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
 
       // Try to find file input element
       let fileInput: HTMLInputElement | null = null;
-      
+
       if (options?.inputElement) {
         fileInput = options.inputElement;
       } else {
@@ -778,7 +747,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
       childList: true,
       subtree: true
     });
-    
+
     this.domObserversSetup = true;
   }
 
@@ -808,7 +777,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
     return new Promise((resolve, reject) => {
       let attempts = 0;
       const maxAttempts = 5; // Maximum 10 seconds (20 * 500ms)
-      
+
       const checkReady = () => {
         attempts++;
         const insertionPoint = this.findButtonInsertionPoint();
@@ -1077,7 +1046,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
         try {
           // Get state from UI store - MCP enabled state should be the persistent MCP toggle state
           const uiState = context.stores.ui;
-          
+
           // Get the persistent MCP enabled state and other preferences
           const mcpEnabled = uiState?.mcpEnabled ?? false;
           const autoSubmitEnabled = uiState?.preferences?.autoSubmit ?? false;
@@ -1112,7 +1081,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
             context.logger.debug(`MCP state set to: ${enabled} via UI store`);
           } else {
             context.logger.warn('UI store setMCPEnabled method not available');
-            
+
             // Fallback: Control sidebar visibility directly if MCP state setter not available
             if (context.stores.ui?.setSidebarVisibility) {
               context.stores.ui.setSidebarVisibility(enabled, 'mcp-popover-toggle-fallback');
@@ -1241,7 +1210,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
     try {
       // Check if there's an active sidebar manager
       const activeSidebarManager = (window as any).activeSidebarManager;
-      
+
       if (!activeSidebarManager) {
         this.context.logger.warn('No active sidebar manager found after navigation');
         return;
@@ -1249,7 +1218,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
 
       // Sidebar manager exists, just ensure MCP popover connection is working
       this.ensureMCPPopoverConnection();
-      
+
     } catch (error) {
       this.context.logger.error('Error checking sidebar state after navigation:', error);
     }
@@ -1260,7 +1229,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
    */
   private ensureMCPPopoverConnection(): void {
     this.context.logger.debug('Ensuring MCP popover connection after navigation');
-    
+
     try {
       // Check if MCP popover is still injected
       if (!this.isMCPPopoverInjected()) {

@@ -694,6 +694,13 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
 
   // Optimized click handler with better performance and mcpClient integration
   executeButton.onclick = async () => {
+    // Start automation tracking on first execution
+    // Count all visible execute buttons to determine iteration size
+    const allExecuteButtons = document.querySelectorAll('.execute-button');
+    if (allExecuteButtons.length > 0 && window.automationService?.onIterationStarted) {
+      window.automationService.onIterationStarted(allExecuteButtons.length);
+    }
+
     // Batch button state changes
     executeButton.disabled = true;
     buttonText.style.display = 'none';
@@ -765,7 +772,6 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
 
         // Update history panel with mcpClient reference
         updateHistoryPanel(historyPanel, executionData, mcpClient);
-
       } catch (toolError: any) {
         resetButtonState();
 
@@ -783,7 +789,6 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
 
         displayResult(resultsPanel, loadingIndicator, false, errorMessage);
       }
-
     } catch (error: any) {
       resetButtonState();
       resultsPanel.style.display = 'block';
@@ -791,12 +796,7 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
       const errorMessage = error instanceof Error ? error.message : String(error);
       logger.error('Execute button error:', error);
 
-      displayResult(
-        resultsPanel,
-        loadingIndicator,
-        false,
-        `Unexpected error: ${errorMessage}`,
-      );
+      displayResult(resultsPanel, loadingIndicator, false, `Unexpected error: ${errorMessage}`);
     }
   };
 
@@ -906,8 +906,10 @@ export const extractFunctionParameters = (rawContent: string): Record<string, an
         } else {
           // Try to parse as JSON if it looks like JSON (starts with { or [)
           const trimmedValue = value.trim();
-          if ((trimmedValue.startsWith('{') && trimmedValue.endsWith('}')) ||
-            (trimmedValue.startsWith('[') && trimmedValue.endsWith(']'))) {
+          if (
+            (trimmedValue.startsWith('{') && trimmedValue.endsWith('}')) ||
+            (trimmedValue.startsWith('[') && trimmedValue.endsWith(']'))
+          ) {
             try {
               value = JSON.parse(trimmedValue);
               if (CONFIG.debug) logger.debug(`Auto-parsed JSON for parameter ${name}:`, value);
@@ -1041,48 +1043,17 @@ const attachResultAsFile = async (
               logger.debug('Confirmation text inserted successfully');
             } catch (insertError) {
               logger.warn('Failed to insert confirmation text:', insertError);
-              // Fallback to legacy method if available
-              if (typeof adapter.insertTextIntoInput === 'function') {
-                try {
-                  // Dispatch event for legacy insertion
-                  requestAnimationFrame(() => {
-                    document.dispatchEvent(
-                      new CustomEvent('mcp:tool-execution-complete', {
-                        detail: {
-                          result: confirmationText,
-                          isFileAttachment: false,
-                          fileName: '',
-                          skipAutoInsertCheck: true,
-                        },
-                      }),
-                    );
-                  });
-                } catch (legacyError) {
-                  logger.warn('Legacy insertion also failed:', legacyError);
-                }
-              }
             }
           } else if (typeof adapter.insertTextIntoInput === 'function') {
-            // Use legacy method directly
             try {
-              requestAnimationFrame(() => {
-                document.dispatchEvent(
-                  new CustomEvent('mcp:tool-execution-complete', {
-                    detail: {
-                      result: confirmationText,
-                      isFileAttachment: false,
-                      fileName: '',
-                      skipAutoInsertCheck: true,
-                    },
-                  }),
-                );
-              });
+              await adapter.insertTextIntoInput(confirmationText);
+              logger.debug('Confirmation text inserted via legacy method');
             } catch (legacyError) {
               logger.warn('Legacy insertion failed:', legacyError);
             }
           }
 
-          // Efficient event dispatch for file attachment
+          // Event dispatch for file attachment
           const eventDetail = {
             file,
             result: confirmationText,
@@ -1634,7 +1605,8 @@ export const displayResult = (
     // Handle auto-attachment for large results
     if (
       rawResultText.length > MAX_INSERT_LENGTH &&
-      adapter && adapterSupportsCapability('file-attachment') &&
+      adapter &&
+      adapterSupportsCapability('file-attachment') &&
       WEBSITE_NAME_FOR_MAX_INSERT_LENGTH_CHECK.includes(websiteName)
     ) {
       logger.debug(`Auto-attaching file: Result length (${rawResultText.length}) exceeds ${MAX_INSERT_LENGTH}`);
@@ -1722,7 +1694,7 @@ export const displayResult = (
           new CustomEvent('mcp:tool-execution-complete', {
             detail: {
               result: wrappedResult,
-              skipAutoInsertCheck: false
+              skipAutoInsertCheck: false,
             },
           }),
         );

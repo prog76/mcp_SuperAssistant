@@ -59,6 +59,7 @@ const initialUserPreferences: UserPreferences = {
   autoInsertDelay: 2,  // Default delay in seconds
   autoExecuteDelay: 2,  // Default delay in seconds
   autoSubmitDelay: 2,   // Default delay in seconds
+  autoSubmitIterationTimeout: 60, // Default timeout in seconds (60 seconds)
 };
 
 const initialState: Omit<UIState, 'toggleSidebar' | 'toggleMinimize' | 'resizeSidebar' | 'setSidebarVisibility' | 'updatePreferences' | 'addNotification' | 'addRemoteNotification' | 'removeNotification' | 'dismissNotification' | 'clearNotifications' | 'openModal' | 'closeModal' | 'setGlobalLoading' | 'setTheme' | 'setMCPEnabled'> = {
@@ -86,7 +87,7 @@ export const useUIStore = create<UIState>()(
 
         toggleMinimize: (reason?: string) => {
           const newMinimized = !get().sidebar.isMinimized;
-          set(state => ({ 
+          set(state => ({
             sidebar: { ...state.sidebar, isMinimized: newMinimized },
             preferences: { ...state.preferences, isMinimized: newMinimized }
           }));
@@ -134,20 +135,20 @@ export const useUIStore = create<UIState>()(
           // Import config store to check notification limits
           const { useConfigStore } = require('./config.store');
           const configStore = useConfigStore.getState();
-          
+
           // Check if notifications are enabled
           if (!configStore.notificationConfig.enabled) {
             logger.debug('[UIStore] Remote notifications disabled, ignoring:', notification.id);
             return '';
           }
-          
+
           // Check frequency limits
           const today = new Date().toDateString();
-          const todayNotifications = get().notifications.filter(n => 
+          const todayNotifications = get().notifications.filter(n =>
             new Date(n.timestamp).toDateString() === today &&
             (n as any).source === 'remote'
           ).length;
-          
+
           if (todayNotifications >= configStore.notificationConfig.maxPerDay) {
             logger.debug('[UIStore] Daily notification limit reached, ignoring:', notification.id);
             eventBus.emit('notification:frequency-limited', {
@@ -156,12 +157,12 @@ export const useUIStore = create<UIState>()(
             });
             return '';
           }
-          
+
           // Create enhanced notification
-          const newNotification: Notification & { 
-            source: 'remote'; 
-            campaignId?: string; 
-            actions?: NotificationAction[]; 
+          const newNotification: Notification & {
+            source: 'remote';
+            campaignId?: string;
+            actions?: NotificationAction[];
             priority?: number;
           } = {
             id: notification.id || `remote_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -175,17 +176,17 @@ export const useUIStore = create<UIState>()(
             actions: notification.actions,
             priority: notification.priority || 1
           };
-          
+
           // Add to notifications list, sorting by priority
-          set(state => ({ 
+          set(state => ({
             notifications: [...state.notifications, newNotification]
               .sort((a, b) => ((b as any).priority || 1) - ((a as any).priority || 1))
           }));
-          
+
           // Mark as shown in config store
           configStore.markNotificationShown(newNotification.id);
           configStore.addNotificationToHistory(newNotification.id);
-          
+
           // Emit events
           eventBus.emit('ui:notification-added', { notification: newNotification });
           eventBus.emit('notification:shown', {
@@ -193,7 +194,7 @@ export const useUIStore = create<UIState>()(
             source: 'remote',
             timestamp: Date.now()
           });
-          
+
           // Emit analytics event
           eventBus.emit('analytics:track', {
             event: 'notification_shown',
@@ -204,7 +205,7 @@ export const useUIStore = create<UIState>()(
               source: 'remote'
             }
           });
-          
+
           logger.debug('[UIStore] Remote notification added:', newNotification);
           return newNotification.id;
         },
@@ -225,7 +226,7 @@ export const useUIStore = create<UIState>()(
                 reason: reason || 'user_dismissed',
                 timestamp: Date.now()
               });
-              
+
               // Emit analytics event
               eventBus.emit('analytics:track', {
                 event: 'notification_dismissed',
@@ -238,7 +239,7 @@ export const useUIStore = create<UIState>()(
               });
             }
           }
-          
+
           // Remove the notification
           get().removeNotification(id);
         },
@@ -299,8 +300,8 @@ export const useUIStore = create<UIState>()(
         storage: createJSONStorage(() => localStorage),
         partialize: (state) => ({
           // Persist sidebar state and user preferences
-          sidebar: { 
-            width: state.sidebar.width, 
+          sidebar: {
+            width: state.sidebar.width,
             position: state.sidebar.position,
             isVisible: state.sidebar.isVisible,
             isMinimized: state.sidebar.isMinimized
@@ -324,7 +325,7 @@ useAppStore.subscribe(
     const oldTheme = prevState.globalSettings.theme;
     if (newTheme && newTheme !== oldTheme) {
       // Check against current UIStore theme to prevent loops and unnecessary updates
-      if (newTheme !== useUIStore.getState().theme) { 
+      if (newTheme !== useUIStore.getState().theme) {
         logger.debug('[UIStore] Theme changed in AppStore, syncing to UIStore:', newTheme);
         useUIStore.getState().setTheme(newTheme); // Use the existing setTheme action
         // The setTheme action itself emits 'ui:theme-changed', so no need to emit here again.

@@ -1,7 +1,6 @@
 import { CONFIG } from '../core/config';
 import { debounce } from '../utils/index';
 import { renderFunctionCall, renderedFunctionBlocks, processedElements } from '../renderer/index';
-import { stabilizeBlock, unstabilizeBlock } from '../renderer/components';
 import {
   monitorNode,
   streamingObservers,
@@ -9,7 +8,6 @@ import {
   streamingLastUpdated,
   startProgressiveUpdates,
 } from './streamObserver';
-import type { StabilizedBlock } from '../core/types';
 import { streamingContentLengths } from '../parser/index';
 import {
   preExistingIncompleteBlocks,
@@ -34,6 +32,9 @@ declare global {
     _stalledStreamRetryCount?: Map<string, number>;
     _processUpdateQueue?: () => void;
     preExistingIncompleteBlocks?: Set<string>;
+    automationService?: {
+      onIterationStarted?: (count: number) => void;
+    };
   }
 }
 
@@ -86,18 +87,7 @@ export const processUpdateQueue = (): void => {
   isProcessing = true;
   window._isProcessing = true;
 
-  const stabilizedBlocks = new Map<string, StabilizedBlock>();
-
   try {
-    // if (CONFIG.usePositionFixed) {
-    //     updateQueue.forEach((node, blockId) => {
-    //         const stabilized = stabilizeBlock(blockId);
-    //         if (stabilized) {
-    //             stabilizedBlocks.set(blockId, stabilized);
-    //         }
-    //     });
-    // }
-
     updateQueue.forEach((node, blockId) => {
       if (CONFIG.debug) logger.debug(`Processing update for block: ${blockId}`);
       renderFunctionCall(node as HTMLPreElement, { current: isProcessing });
@@ -139,9 +129,14 @@ if (typeof window !== 'undefined') {
 
 /**
  * Process all function calls in the document
+ * Notifies the automation service of new function blocks for autosubmit tracking
  */
 export const processFunctionCalls = (): number => {
   const processedCount = checkForUnprocessedFunctionCalls();
+
+  // Note: Don't start automation tracking here - wait for actual execution
+  // The automation service will be started when execute buttons are clicked
+
   return processedCount;
 };
 
@@ -198,7 +193,7 @@ export const startDirectMonitoring = (): void => {
   const handleDomChanges = debounce(() => {
     if (!isProcessing) {
       const processedCount = checkForUnprocessedFunctionCalls();
-      if (processedCount > 0 && CONFIG.debug) {
+      if (CONFIG.debug && processedCount > 0) {
         logger.debug(`Processed ${processedCount} new function blocks`);
       }
     }
@@ -230,8 +225,7 @@ export const startDirectMonitoring = (): void => {
             // Also check if the content of any text nodes might contain function call patterns (XML or JSON)
             if (element.textContent) {
               const hasXMLPattern =
-                element.textContent.includes('<function_calls>') ||
-                element.textContent.includes('<invoke');
+                element.textContent.includes('<function_calls>') || element.textContent.includes('<invoke');
 
               // Be lenient for JSON - allow partial/streaming content
               const looksLikeJSONStart = element.textContent.trim().startsWith('{');
@@ -259,9 +253,7 @@ export const startDirectMonitoring = (): void => {
             // Also check text nodes for function call patterns (XML or JSON)
             const textContent = node.textContent || '';
 
-            const hasXMLPattern =
-              textContent.includes('<function_calls>') ||
-              textContent.includes('<invoke');
+            const hasXMLPattern = textContent.includes('<function_calls>') || textContent.includes('<invoke');
 
             // Be lenient for JSON - allow partial/streaming content
             const looksLikeJSONStart = textContent.trim().startsWith('{');
@@ -281,9 +273,7 @@ export const startDirectMonitoring = (): void => {
         // Check if the characterData mutation might be adding function call content (XML or JSON)
         const textContent = mutation.target.textContent || '';
 
-        const hasXMLPattern =
-          textContent.includes('<function_calls>') ||
-          textContent.includes('<invoke');
+        const hasXMLPattern = textContent.includes('<function_calls>') || textContent.includes('<invoke');
 
         // Be lenient for JSON detection - allow partial/streaming content
         // Check if it looks like JSON start, not just complete patterns

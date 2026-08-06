@@ -1,0 +1,40 @@
+services:
+  workspace:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    container_name: SuperAssistant
+    volumes:
+      - type: bind
+        source: ../
+        target: /SuperAssistant
+      - type: bind
+        source: ${HOME}/.ssh
+        target: /home/vscode/.ssh
+        read_only: true
+      - type: bind
+        source: ${HOME}/.kube
+        target: /home/vscode/.kube
+        read_only: true
+      - type: bind
+        source: ${HOME}/.gitconfig
+        target: /home/vscode/.gitconfig
+        consistency: cached
+      # Docker socket and binaries (same as original)
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: bind
+        source: /usr/bin/docker
+        target: /usr/bin/docker
+      - type: bind
+        source: /usr/bin/docker-compose
+        target: /usr/bin/docker-compose
+      - type: bind
+        source: /usr/libexec/docker/cli-plugins
+        target: /usr/libexec/docker/cli-plugins
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+    # Optional: set environment variables for Docker
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
