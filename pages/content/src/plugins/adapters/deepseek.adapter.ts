@@ -265,6 +265,22 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
   }
 
   /**
+   * Get the chat input element using the configured selectors
+   */
+  private getInputElement(): HTMLElement | null {
+    const selectors = this.selectors.CHAT_INPUT.split(', ');
+    for (const selector of selectors) {
+      const element = document.querySelector(selector.trim()) as HTMLElement;
+      if (element) {
+        this.context.logger.debug(`Found chat input using selector: ${selector.trim()}`);
+        return element;
+      }
+    }
+    this.context.logger.warn('Could not find chat input element with any selector');
+    return null;
+  }
+
+  /**
    * Insert text into the DeepSeek chat input field
    * Enhanced with better selector handling and event integration
    */
@@ -403,12 +419,12 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
 
   /**
    * Submit the current text in the DeepSeek chat input
-   * Finds the send button as nextElementSibling of input[type="file"] and clicks it
+   * Uses KeyboardEvent on the chat input as the primary submit method
    */
   async submitForm(options?: { formElement?: HTMLFormElement }): Promise<boolean> {
     this.context.logger.debug('Attempting to submit DeepSeek chat input');
 
-    // DeepSeek's send button is the nextElementSibling of the file input
+    // Verify submit button exists (fileInput -> nextElementSibling)
     const fileInput = document.querySelector(this.selectors.SUBMIT_BUTTON) as HTMLInputElement;
     if (!fileInput) {
       this.context.logger.error('Could not find file input to locate send button');
@@ -423,22 +439,36 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
       return false;
     }
 
-    this.context.logger.debug('Found DeepSeek send button, clicking it');
+    this.context.logger.debug('Submit button detected, proceeding with KeyboardEvent submit');
+
+    // Get the chat input element
+    const entry = this.getInputElement();
+    if (!entry) {
+      this.context.logger.error('Could not find chat input element');
+      this.emitExecutionFailed('submitForm', 'Chat input element not found');
+      return false;
+    }
 
     try {
-      // Click the submit button to send the message
-      submitButton.click();
+      // Dispatch Enter keydown event on the chat input
+      entry.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true
+      }));
 
       this.emitExecutionCompleted('submitForm', {}, {
         success: true,
-        method: 'submitButton.click'
+        method: 'keyboardEvent'
       });
 
-      this.context.logger.debug('DeepSeek chat input submitted successfully');
+      this.context.logger.debug('DeepSeek chat input submitted successfully via KeyboardEvent');
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.context.logger.error(`Error submitting DeepSeek chat input: ${errorMessage}`);
+      this.context.logger.error(`Error submitting via KeyboardEvent: ${errorMessage}`);
       this.emitExecutionFailed('submitForm', errorMessage);
       return false;
     }

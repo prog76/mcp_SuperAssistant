@@ -694,13 +694,6 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
 
   // Optimized click handler with better performance and mcpClient integration
   executeButton.onclick = async () => {
-    // Start automation tracking on first execution
-    // Count all visible execute buttons to determine iteration size
-    const allExecuteButtons = document.querySelectorAll('.execute-button');
-    if (allExecuteButtons.length > 0 && window.automationService?.onIterationStarted) {
-      window.automationService.onIterationStarted(allExecuteButtons.length);
-    }
-
     // Batch button state changes
     executeButton.disabled = true;
     buttonText.style.display = 'none';

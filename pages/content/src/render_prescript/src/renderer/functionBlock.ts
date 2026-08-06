@@ -91,7 +91,7 @@ function getAutomationState() {
       autoExecute: automationState.autoExecute || false,
     };
   }
-  
+
   // Fallback to legacy toggle state
   const legacyState = (window as any).toggleState;
   return {
@@ -420,7 +420,7 @@ const ScrollUtils = {
     if (preElement) {
       (preElement as any)._userHasScrolled = false;
     }
-    
+
     // Force scroll to bottom for streaming content
     ScrollUtils.performOptimizedScroll(paramValueElement, true);
   },
@@ -466,62 +466,62 @@ const injectStreamingStyles = (() => {
       .streaming-param-name {
         position: relative;
       }
-      
+
       .param-value[data-streaming="true"] {
         position: relative;
-        background: linear-gradient(135deg, 
-          rgba(0, 212, 255, 0.03) 0%, 
+        background: linear-gradient(135deg,
+          rgba(0, 212, 255, 0.03) 0%,
           rgba(0, 153, 204, 0.01) 100%);
         border-left: 2px solid rgba(0, 212, 255, 0.2);
         padding-left: 8px;
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       }
-      
+
       .param-value[data-streaming="true"] .content-wrapper {
         animation: subtle-breathe 3s ease-in-out infinite;
       }
-      
+
       @keyframes subtle-breathe {
         0%, 100% { transform: scale(1); }
         50% { transform: scale(1.001); }
       }
-      
+
       /* Enhanced scrolling styles */
       .param-value[data-streaming="true"] {
         overflow-y: auto !important;
         max-height: 300px !important;
         scroll-behavior: smooth !important;
       }
-      
+
       .param-value[data-streaming="true"]::-webkit-scrollbar {
         width: 6px;
       }
-      
+
       .param-value[data-streaming="true"]::-webkit-scrollbar-track {
         background: rgba(0, 0, 0, 0.1);
         border-radius: 3px;
       }
-      
+
       .param-value[data-streaming="true"]::-webkit-scrollbar-thumb {
         background: rgba(0, 212, 255, 0.5);
         border-radius: 3px;
         transition: background 0.2s ease;
       }
-      
+
       .param-value[data-streaming="true"]::-webkit-scrollbar-thumb:hover {
         background: rgba(0, 212, 255, 0.8);
       }
-      
+
       /* Fix text color inheritance for both themes */
       .function-block.theme-light .param-value[data-streaming="true"] pre,
       .function-block:not(.theme-dark) .param-value[data-streaming="true"] pre {
         color: inherit !important;
       }
-      
+
       .function-block.theme-dark .param-value[data-streaming="true"] pre {
         color: inherit !important;
       }
-      
+
       /* Spinner animation styles - ensure they're loaded */
       .spinner {
         display: inline-block;
@@ -537,12 +537,12 @@ const injectStreamingStyles = (() => {
         backface-visibility: hidden;
         contain: layout style;
       }
-      
+
       .function-block.theme-dark .spinner {
         border: 2px solid rgba(138, 180, 248, 0.3);
         border-top: 2px solid #8ab4f8;
       }
-      
+
       @keyframes spinner-spin {
         0% { transform: rotate(0deg) translate3d(0,0,0); }
         100% { transform: rotate(360deg) translate3d(0,0,0); }
@@ -647,14 +647,14 @@ export const executionTracker: ExecutionTracker = {
 const AutoExpandUtils = {
   expandBlock: (blockDiv: HTMLDivElement, animate: boolean = true): void => {
     if (blockDiv.classList.contains('expanded')) return;
-    
+
     const expandButton = blockDiv.querySelector('.expand-button') as HTMLButtonElement;
     const expandableContent = blockDiv.querySelector('.expandable-content') as HTMLDivElement;
-    
+
     if (!expandButton || !expandableContent) return;
-    
+
     blockDiv.classList.add('expanded', 'auto-expanded');
-    
+
     if (animate) {
       // Smooth expansion animation
       DOMUtils.applyStyles(expandableContent, {
@@ -664,9 +664,9 @@ const AutoExpandUtils = {
         paddingTop: '0',
         paddingBottom: '0',
       });
-      
+
       const targetHeight = expandableContent.scrollHeight + 24;
-      
+
       requestAnimationFrame(() => {
         DOMUtils.applyStyles(expandableContent, {
           maxHeight: targetHeight + 'px',
@@ -675,7 +675,7 @@ const AutoExpandUtils = {
           paddingBottom: '12px',
           transition: 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
         });
-        
+
         const expandIcon = expandButton.querySelector('svg path');
         if (expandIcon) {
           expandIcon.setAttribute('d', 'M16 14l-4-4-4 4');
@@ -693,23 +693,23 @@ const AutoExpandUtils = {
       });
     }
   },
-  
+
   collapseBlock: (blockDiv: HTMLDivElement, animate: boolean = true): void => {
     if (!blockDiv.classList.contains('expanded') || !blockDiv.classList.contains('auto-expanded')) return;
-    
+
     const expandButton = blockDiv.querySelector('.expand-button') as HTMLButtonElement;
     const expandableContent = blockDiv.querySelector('.expandable-content') as HTMLDivElement;
-    
+
     if (!expandButton || !expandableContent) return;
-    
+
     blockDiv.classList.remove('expanded', 'auto-expanded');
-    
+
     if (animate) {
       // Smooth collapse animation
       const currentHeight = expandableContent.scrollHeight;
       expandableContent.style.maxHeight = currentHeight + 'px';
       expandableContent.offsetHeight; // Force reflow
-      
+
       requestAnimationFrame(() => {
         DOMUtils.applyStyles(expandableContent, {
           maxHeight: '0px',
@@ -718,14 +718,14 @@ const AutoExpandUtils = {
           paddingBottom: '0',
           transition: 'all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
         });
-        
+
         const expandIcon = expandButton.querySelector('svg path');
         if (expandIcon) {
           expandIcon.setAttribute('d', 'M8 10l4 4 4-4');
         }
         expandButton.title = 'Expand function details';
       });
-      
+
       // Hide after animation completes
       setTimeout(() => {
         if (!blockDiv.classList.contains('expanded')) {
@@ -743,14 +743,14 @@ const AutoExpandUtils = {
       });
     }
   },
-  
+
   scheduleAutoCollapse: (blockDiv: HTMLDivElement, delay: number = 2000): void => {
     const blockId = blockDiv.getAttribute('data-block-id');
     if (!blockId) return;
-    
+
     const timeoutKey = `auto-collapse-${blockId}`;
     PerformanceUtils.cleanupTimeout(timeoutKey);
-    
+
     PerformanceUtils.setManagedTimeout(
       timeoutKey,
       () => {
@@ -1026,7 +1026,7 @@ const ParamElementUtils = {
             willChange: 'auto',
             containIntrinsicSize: 'auto',
           });
-          
+
           // Check if block should auto-collapse when streaming ends
           const blockDiv = paramValueElement.closest('.function-block') as HTMLDivElement;
           if (blockDiv && blockDiv.classList.contains('auto-expanded')) {
@@ -1120,6 +1120,9 @@ const AutoExecutionUtils = {
           const executeButton = currentBlock.querySelector<HTMLButtonElement>('.execute-button');
           if (executeButton) {
             logger.debug(`Auto-execute: Executing function ${functionDetails.functionName}`);
+            if (window.automationService?.onIterationStarted) {
+              window.automationService.onIterationStarted(1);
+            }
             executeButton.click();
             executionTracker.cleanupBlock(blockId);
           } else {
@@ -1288,7 +1291,7 @@ export const renderFunctionCall = (block: HTMLPreElement, isProcessingRef: { cur
     blockDiv.setAttribute('data-block-id', blockId);
     applyThemeClass(blockDiv);
     renderedFunctionBlocks.set(blockId, blockDiv);
-    
+
     // Ensure blocks start collapsed by default
     blockDiv.classList.remove('expanded', 'auto-expanded');
   }
@@ -1371,7 +1374,7 @@ export const renderFunctionCall = (block: HTMLPreElement, isProcessingRef: { cur
   if (!expandableContent) {
     expandableContent = BlockElementUtils.createExpandableContent();
     blockDiv.appendChild(expandableContent);
-    
+
     // Ensure content starts hidden for new blocks
     if (isNewRender) {
       DOMUtils.applyStyles(expandableContent, {
@@ -1640,7 +1643,7 @@ export const createOrUpdateParamElement = (
 
   paramValueElement.setAttribute('data-param-value', JSON.stringify(value));
   ParamElementUtils.handleStreamingState(paramNameElement, paramValueElement, paramId, isStreaming);
-  
+
   // Handle auto-expansion for streaming content
   if (isStreaming) {
     const blockDiv = container.closest('.function-block') as HTMLDivElement;

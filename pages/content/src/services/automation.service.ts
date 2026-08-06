@@ -115,6 +115,7 @@ export class AutomationService {
   private eventListener: ((event: Event) => void) | null = null;
 
   // === New counter-based iteration tracking ===
+  private iterationGeneration: number = 0; // Incremented on each onIterationStarted to prevent stale resets
   private iterationCounter: number = 0; // Total function_call blocks detected
   private successCount: number = 0; // Successful tool executions
   private errorCount: number = 0; // Failed tool executions
@@ -198,6 +199,10 @@ export class AutomationService {
       return;
     }
 
+    // Bump generation so any in-flight evaluate/trySubmit from a previous
+    // iteration cannot accidentally reset this iteration's state.
+    this.iterationGeneration++;
+
     // Reset any previous iteration state
     this.resetCounters();
     this.disarmTimer();
@@ -256,6 +261,10 @@ export class AutomationService {
     this.submitted = true;
     this.disarmTimer();
 
+    // Capture the generation that initiated this decision so we don't
+    // reset state if a newer iteration has already started.
+    const generation = this.iterationGeneration;
+
     if (this.successCount > 0) {
       // At least one success → try to submit
       console.log(`[AutomationService] Decision: submit (${this.successCount} success, ${this.errorCount} errors)`);
@@ -266,7 +275,10 @@ export class AutomationService {
       await this.notifyNoSuccess();
     }
 
-    this.resetCounters();
+    // Only reset if this is still the active generation.
+    if (this.iterationGeneration === generation) {
+      this.resetCounters();
+    }
   }
 
   /**
