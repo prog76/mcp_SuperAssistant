@@ -86,6 +86,7 @@ function getAutomationState() {
   const automationState = (window as any).__mcpAutomationState;
   if (automationState) {
     return {
+      ready: true,
       autoInsert: automationState.autoInsert || false,
       autoSubmit: automationState.autoSubmit || false,
       autoExecute: automationState.autoExecute || false,
@@ -94,10 +95,23 @@ function getAutomationState() {
 
   // Fallback to legacy toggle state
   const legacyState = (window as any).toggleState;
+  if (legacyState) {
+    return {
+      ready: true,
+      autoInsert: legacyState.autoInsert === true,
+      autoSubmit: legacyState.autoSubmit === true,
+      autoExecute: legacyState.autoExecute === true,
+    };
+  }
+
+  // AutomationService has not exposed its state yet (it initializes after
+  // applicationInit()). Report not-ready so callers can wait instead of
+  // treating it as "user disabled everything".
   return {
-    autoInsert: legacyState?.autoInsert === true,
-    autoSubmit: legacyState?.autoSubmit === true,
-    autoExecute: legacyState?.autoExecute === true,
+    ready: false,
+    autoInsert: false,
+    autoSubmit: false,
+    autoExecute: false,
   };
 }
 
@@ -1145,56 +1159,62 @@ const AutoExecutionUtils = {
       PerformanceUtils.setManagedTimeout(
         `auto-exec-${blockId}-${attempts}`,
         () => {
-          // Never execute tools while the assistant response is still
-          // streaming: results inserted mid-stream clobber the input box and
-          // auto-submit would hit the stop button. Wait (bounded) until the
-          // response completes before running the tool.
-          AutoExecutionUtils.waitForResponseComplete(blockId, () => {
-            let currentBlock = document.querySelector<HTMLDivElement>(`.function-block[data-block-id="${blockId}"]`);
+          // The automation state may not be exposed yet when the first tool
+          // call renders (AutomationService initializes after
+          // applicationInit()). Wait for it here instead of dropping the
+          // auto-execution entirely.
+          AutoExecutionUtils.waitForAutoExecuteReady(blockId, () => {
+            // Never execute tools while the assistant response is still
+            // streaming: results inserted mid-stream clobber the input box and
+            // auto-submit would hit the stop button. Wait (bounded) until the
+            // response completes before running the tool.
+            AutoExecutionUtils.waitForResponseComplete(blockId, () => {
+              let currentBlock = document.querySelector<HTMLDivElement>(`.function-block[data-block-id="${blockId}"]`);
 
-            if (!currentBlock) {
-              logger.debug(`Auto-execute: Original block ${blockId} not found. Searching for replacement...`);
-              currentBlock = AutoExecutionUtils.findReplacementBlock(functionDetails);
-            }
+              if (!currentBlock) {
+                logger.debug(`Auto-execute: Original block ${blockId} not found. Searching for replacement...`);
+                currentBlock = AutoExecutionUtils.findReplacementBlock(functionDetails);
+              }
 
-            if (!currentBlock) {
-              logger.debug(
-                `Auto-execute: Block ${blockId} not found (attempt ${attempts}/${MAX_AUTO_EXECUTE_ATTEMPTS})`,
+              if (!currentBlock) {
+                logger.debug(
+                  `Auto-execute: Block ${blockId} not found (attempt ${attempts}/${MAX_AUTO_EXECUTE_ATTEMPTS})`,
+                );
+                if (attempts < MAX_AUTO_EXECUTE_ATTEMPTS) {
+                  setupAutoExecution();
+                } else {
+                  logger.debug(`Auto-execute: Giving up on block ${blockId} - not found in DOM`);
+                  executionTracker.cleanupBlock(blockId);
+                }
+                return;
+              }
+
+              const finalCheckExecuted = getPreviousExecution(
+                functionDetails.functionName,
+                functionDetails.callId,
+                functionDetails.contentSignature,
               );
-              if (attempts < MAX_AUTO_EXECUTE_ATTEMPTS) {
-                setupAutoExecution();
-              } else {
-                logger.debug(`Auto-execute: Giving up on block ${blockId} - not found in DOM`);
+              if (finalCheckExecuted) {
+                logger.debug(`Auto-execute: Function already executed, skipping.`);
                 executionTracker.cleanupBlock(blockId);
+                return;
               }
-              return;
-            }
 
-            const finalCheckExecuted = getPreviousExecution(
-              functionDetails.functionName,
-              functionDetails.callId,
-              functionDetails.contentSignature,
-            );
-            if (finalCheckExecuted) {
-              logger.debug(`Auto-execute: Function already executed, skipping.`);
-              executionTracker.cleanupBlock(blockId);
-              return;
-            }
-
-            const executeButton = currentBlock.querySelector<HTMLButtonElement>('.execute-button');
-            if (executeButton) {
-              logger.debug(`Auto-execute: Executing function ${functionDetails.functionName}`);
-              executeButton.click();
-              executionTracker.cleanupBlock(blockId);
-            } else {
-              logger.debug(`Auto-execute: Execute button not found (attempt ${attempts}/${MAX_AUTO_EXECUTE_ATTEMPTS})`);
-              if (attempts < MAX_AUTO_EXECUTE_ATTEMPTS) {
-                setupAutoExecution();
-              } else {
-                logger.debug(`Auto-execute: Giving up on block ${blockId} - button not found`);
+              const executeButton = currentBlock.querySelector<HTMLButtonElement>('.execute-button');
+              if (executeButton) {
+                logger.debug(`Auto-execute: Executing function ${functionDetails.functionName}`);
+                executeButton.click();
                 executionTracker.cleanupBlock(blockId);
+              } else {
+                logger.debug(`Auto-execute: Execute button not found (attempt ${attempts}/${MAX_AUTO_EXECUTE_ATTEMPTS})`);
+                if (attempts < MAX_AUTO_EXECUTE_ATTEMPTS) {
+                  setupAutoExecution();
+                } else {
+                  logger.debug(`Auto-execute: Giving up on block ${blockId} - button not found`);
+                  executionTracker.cleanupBlock(blockId);
+                }
               }
-            }
+            });
           });
         },
         autoExecuteDelay + 500, // Add base delay to the configured delay
@@ -1202,6 +1222,43 @@ const AutoExecutionUtils = {
     };
 
     setupAutoExecution();
+  },
+
+  /**
+   * Wait for the automation state to be exposed on window before proceeding.
+   * - State ready + autoExecute on  → continue immediately
+   * - State ready + autoExecute off → user disabled it, give up right away
+   * - State not exposed yet          → poll until it appears (bounded)
+   *
+   * This covers the first tool call of a session, which can finish rendering
+   * before AutomationService has exposed __mcpAutomationState.
+   */
+  waitForAutoExecuteReady: (blockId: string, onReady: () => void, maxWaitMs: number = 15000): void => {
+    const startedAt = Date.now();
+
+    const check = () => {
+      const state = getAutomationState();
+
+      if (state.ready) {
+        if (state.autoExecute) {
+          onReady();
+        } else {
+          logger.debug(`Auto-execute: Automation state ready but autoExecute disabled for block ${blockId}`);
+          executionTracker.cleanupBlock(blockId);
+        }
+        return;
+      }
+
+      if (Date.now() - startedAt >= maxWaitMs) {
+        logger.debug(`Auto-execute: Timed out waiting for automation state for block ${blockId}`);
+        executionTracker.cleanupBlock(blockId);
+        return;
+      }
+
+      PerformanceUtils.setManagedTimeout(`auto-exec-ready-${blockId}`, check, 500);
+    };
+
+    check();
   },
 
   /**
@@ -1625,7 +1682,12 @@ export const renderFunctionCall = (block: HTMLPreElement, isProcessingRef: { cur
       const automationState = getAutomationState();
       const autoExecuteEnabled = automationState.autoExecute;
       if (contentSignature && !executionTracker.isFunctionExecuted(callId, contentSignature, functionName)) {
-        if (autoExecuteEnabled !== true) {
+        // Only skip when the automation state is ready AND auto-execute is
+        // explicitly off. When the state has not been exposed yet (first
+        // tool call can render before AutomationService finishes
+        // initializing), still set up auto-execution - the readiness check
+        // inside the execution chain will wait for the state to appear.
+        if (automationState.ready && autoExecuteEnabled !== true) {
           logger.debug(`Auto-execution disabled by user settings for block ${blockId} (${functionName})`);
           return true;
         }

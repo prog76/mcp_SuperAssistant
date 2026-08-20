@@ -424,8 +424,6 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
    */
   async submitForm(options?: { formElement?: HTMLFormElement }): Promise<boolean> {
     this.context.logger.debug('Attempting to submit DeepSeek chat input');
-  async submitForm(options?: { formElement?: HTMLFormElement }): Promise<boolean> {
-    this.context.logger.debug('Attempting to submit DeepSeek chat input');
 
     let submitButton: HTMLElement | null = null;
     let matchedSelector = '';

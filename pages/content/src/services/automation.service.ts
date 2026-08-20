@@ -114,6 +114,7 @@ export class AutomationService {
   private static instance: AutomationService | null = null;
   private isInitialized = false;
   private eventListener: ((event: Event) => void) | null = null;
+  private storeUnsubscribe: (() => void) | null = null;
 
   // === New counter-based iteration tracking ===
   private iterationGeneration: number = 0; // Incremented on each onIterationStarted to prevent stale resets
@@ -150,6 +151,11 @@ export class AutomationService {
     // Initialize store access functions
     await initializeStoreAccess();
 
+    // Keep window.__mcpAutomationState in sync with preference changes so
+    // render_prescript always reads fresh values (covers persist rehydrate
+    // and user toggles after startup)
+    this.setupStoreSubscription();
+
     // Set up event listener for tool execution completion
     this.setupToolExecutionListener();
 
@@ -181,6 +187,12 @@ export class AutomationService {
 
     this.disarmTimer();
     this.resetCounters();
+
+    // Unsubscribe from the UI store
+    if (this.storeUnsubscribe) {
+      this.storeUnsubscribe();
+      this.storeUnsubscribe = null;
+    }
 
     this.isInitialized = false;
     logger.debug('[AutomationService] Automation service cleaned up');
@@ -353,6 +365,27 @@ export class AutomationService {
   // ================================================================
   // Event listeners
   // ================================================================
+
+  /**
+   * Subscribe to the UI store so window.__mcpAutomationState is refreshed
+   * whenever preferences change (user toggles a switch, persisted state is
+   * rehydrated, etc.). render_prescript reads this window global to decide
+   * whether to auto-execute tool blocks.
+   */
+  private setupStoreSubscription(): void {
+    if (this.storeUnsubscribe) return;
+
+    import('../stores/ui.store')
+      .then(({ useUIStore }) => {
+        this.storeUnsubscribe = useUIStore.subscribe(() => {
+          this.exposeAutomationStateToWindow();
+        });
+        logger.debug('[AutomationService] UI store subscription registered');
+      })
+      .catch(error => {
+        logger.error('[AutomationService] Failed to subscribe to UI store:', error);
+      });
+  }
 
   /**
    * Set up the main event listener for tool execution completion
