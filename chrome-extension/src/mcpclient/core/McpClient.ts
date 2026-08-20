@@ -328,7 +328,12 @@ export class McpClient extends EventEmitter<AllEvents> {
     this.clearPrimitivesCache();
   }
 
-  async callTool(toolName: string, args: Record<string, any>, adapterName?: string): Promise<any> {
+  async callTool(
+    toolName: string,
+    args: Record<string, any>,
+    adapterName?: string,
+    options?: import('../types/plugin.js').ToolCallOptions
+  ): Promise<any> {
     if (!this.isConnectedFlag || !this.activePlugin || !this.client) {
       throw new Error('Not connected to any MCP server');
     }
@@ -338,7 +343,7 @@ export class McpClient extends EventEmitter<AllEvents> {
 
     try {
       logger.debug(`Calling tool: ${toolName}`);
-      const result = await this.activePlugin.callTool(this.client, toolName, args);
+      const result = await this.activePlugin.callTool(this.client, toolName, args, options);
 
       const duration = Date.now() - startTime;
       this.emit('tool:call-completed', { toolName, result, duration });

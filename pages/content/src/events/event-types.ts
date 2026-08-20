@@ -23,6 +23,17 @@ export interface EventMap {
   'tool:execution-failed': { toolName: string; error: string; callId: string };
   'tool:list-updated': { tools: Tool[] };
 
+  // MCP tool progress (keep-alive signals from long-running tools; never shown to the assistant)
+  'mcp:tool-progress': {
+    toolName: string;
+    adapterName?: string;
+    requestId?: string | number;
+    progress: number;
+    total?: number;
+    message?: string;
+    timestamp: number;
+  };
+
   // UI events
   'ui:sidebar-toggle': { visible: boolean; reason?: string };
   'ui:sidebar-minimize': { minimized: boolean; reason?: string };

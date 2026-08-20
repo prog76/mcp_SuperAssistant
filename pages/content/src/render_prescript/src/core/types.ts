@@ -10,6 +10,9 @@ export interface FunctionCallRendererConfig {
   targetSelectors: string[];
   enableDirectMonitoring: boolean;
   streamingContainerSelectors: string[];
+  // Containers that hold chain-of-thought / reasoning output. Function blocks
+  // inside these containers are rendered but never auto-executed.
+  thinkingContainerSelectors?: string[];
   function_result_selector?: string[];
   updateThrottle: number;
   streamingMonitoringInterval: number;

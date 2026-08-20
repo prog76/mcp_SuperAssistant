@@ -1727,5 +1727,26 @@ export const displayResult = (
     });
 
     resultsPanel.appendChild(resultContent);
+
+    // Dispatch the error back to the website so the automation service can
+    // insert/submit it like a successful result. Without this, a failed tool
+    // call breaks the agentic loop (the model never learns the tool failed).
+    const wrappedError = `<function_result call_id="${callId}">\n<error>\nTool "${functionName}" failed: ${errorMessage}\n</error>\n</function_result>`;
+
+    requestAnimationFrame(() => {
+      document.dispatchEvent(
+        new CustomEvent('mcp:tool-execution-complete', {
+          detail: {
+            result: wrappedError,
+            isError: true,
+            isFileAttachment: false,
+            fileName: '',
+            skipAutoInsertCheck: false,
+            callId,
+            functionName,
+          },
+        }),
+      );
+    });
   }
 };

@@ -101,6 +101,65 @@ function getAutomationState() {
   };
 }
 
+/**
+ * Check whether an element sits inside a chain-of-thought / reasoning
+ * container (e.g. DeepSeek's .ds-think-content). Function blocks in these
+ * containers represent the model's internal planning, not final tool-call
+ * decisions, so they must never be auto-executed.
+ */
+function isInsideThinkingContainer(element: HTMLElement): boolean {
+  const selectors = CONFIG.thinkingContainerSelectors || [];
+  if (selectors.length === 0) return false;
+  return selectors.some(selector => {
+    try {
+      return !!element.closest(selector);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Detect whether the site is still streaming an assistant response.
+ *
+ * DeepSeek (chat.deepseek.com): the circular action button in the input area
+ * doubles as the send and the stop button. While the response is streaming
+ * the button shows the stop icon and stays enabled even with an empty input;
+ * when idle with an empty input it carries the ds-button--disabled class.
+ *
+ * Returns false on sites where the state cannot be determined so that
+ * auto-execution behaves exactly as before.
+ */
+function isResponseStreaming(): boolean {
+  if (!window.location.hostname.includes('chat.deepseek.com')) return false;
+
+  const actionButton =
+    document.querySelector<HTMLElement>('.bf38813a div[role="button"].ds-button--circle') ||
+    document.querySelector<HTMLElement>('div[role="button"].ds-button--circle');
+  if (!actionButton) return false;
+
+  // Idle with empty input → disabled send button → not streaming
+  if (actionButton.classList.contains('ds-button--disabled')) return false;
+
+  // Enabled button: either "can send" (input has text) or "stop" (streaming).
+  const textarea = document.querySelector<HTMLTextAreaElement>('textarea');
+  const hasText = !!textarea?.value?.trim();
+
+  if (!hasText) {
+    // Enabled + empty input can only be the stop button → streaming
+    return true;
+  }
+
+  // Ambiguous (user typed while streaming): fall back to the icon shape.
+  // The stop icon is a filled square whose SVG path starts with "M2 4.88".
+  try {
+    const d = actionButton.querySelector('svg path')?.getAttribute('d')?.trim() || '';
+    return d.startsWith('M2 4.88');
+  } catch {
+    return false;
+  }
+}
+
 // Common style configurations
 const STREAMING_STYLES = {
   pre: {
@@ -1066,7 +1125,7 @@ const ParamElementUtils = {
 // Auto-execution utilities
 const AutoExecutionUtils = {
   setupOptimizedAutoExecution: (blockId: string, functionDetails: any): void => {
-  const setupAutoExecution = () => {
+    const setupAutoExecution = () => {
       const attempts = executionTracker.incrementAttempts(blockId);
 
       if (attempts > MAX_AUTO_EXECUTE_ATTEMPTS) {
@@ -1086,60 +1145,89 @@ const AutoExecutionUtils = {
       PerformanceUtils.setManagedTimeout(
         `auto-exec-${blockId}-${attempts}`,
         () => {
-          let currentBlock = document.querySelector<HTMLDivElement>(`.function-block[data-block-id="${blockId}"]`);
+          // Never execute tools while the assistant response is still
+          // streaming: results inserted mid-stream clobber the input box and
+          // auto-submit would hit the stop button. Wait (bounded) until the
+          // response completes before running the tool.
+          AutoExecutionUtils.waitForResponseComplete(blockId, () => {
+            let currentBlock = document.querySelector<HTMLDivElement>(`.function-block[data-block-id="${blockId}"]`);
 
-          if (!currentBlock) {
-            logger.debug(`Auto-execute: Original block ${blockId} not found. Searching for replacement...`);
-            currentBlock = AutoExecutionUtils.findReplacementBlock(functionDetails);
-          }
+            if (!currentBlock) {
+              logger.debug(`Auto-execute: Original block ${blockId} not found. Searching for replacement...`);
+              currentBlock = AutoExecutionUtils.findReplacementBlock(functionDetails);
+            }
 
-          if (!currentBlock) {
-            logger.debug(
-              `Auto-execute: Block ${blockId} not found (attempt ${attempts}/${MAX_AUTO_EXECUTE_ATTEMPTS})`,
+            if (!currentBlock) {
+              logger.debug(
+                `Auto-execute: Block ${blockId} not found (attempt ${attempts}/${MAX_AUTO_EXECUTE_ATTEMPTS})`,
+              );
+              if (attempts < MAX_AUTO_EXECUTE_ATTEMPTS) {
+                setupAutoExecution();
+              } else {
+                logger.debug(`Auto-execute: Giving up on block ${blockId} - not found in DOM`);
+                executionTracker.cleanupBlock(blockId);
+              }
+              return;
+            }
+
+            const finalCheckExecuted = getPreviousExecution(
+              functionDetails.functionName,
+              functionDetails.callId,
+              functionDetails.contentSignature,
             );
-            if (attempts < MAX_AUTO_EXECUTE_ATTEMPTS) {
-              setupAutoExecution();
-            } else {
-              logger.debug(`Auto-execute: Giving up on block ${blockId} - not found in DOM`);
+            if (finalCheckExecuted) {
+              logger.debug(`Auto-execute: Function already executed, skipping.`);
               executionTracker.cleanupBlock(blockId);
+              return;
             }
-            return;
-          }
 
-          const finalCheckExecuted = getPreviousExecution(
-            functionDetails.functionName,
-            functionDetails.callId,
-            functionDetails.contentSignature,
-          );
-          if (finalCheckExecuted) {
-            logger.debug(`Auto-execute: Function already executed, skipping.`);
-            executionTracker.cleanupBlock(blockId);
-            return;
-          }
-
-          const executeButton = currentBlock.querySelector<HTMLButtonElement>('.execute-button');
-          if (executeButton) {
-            logger.debug(`Auto-execute: Executing function ${functionDetails.functionName}`);
-            if (window.automationService?.onIterationStarted) {
-              window.automationService.onIterationStarted(1);
-            }
-            executeButton.click();
-            executionTracker.cleanupBlock(blockId);
-          } else {
-            logger.debug(`Auto-execute: Execute button not found (attempt ${attempts}/${MAX_AUTO_EXECUTE_ATTEMPTS})`);
-            if (attempts < MAX_AUTO_EXECUTE_ATTEMPTS) {
-              setupAutoExecution();
-            } else {
-              logger.debug(`Auto-execute: Giving up on block ${blockId} - button not found`);
+            const executeButton = currentBlock.querySelector<HTMLButtonElement>('.execute-button');
+            if (executeButton) {
+              logger.debug(`Auto-execute: Executing function ${functionDetails.functionName}`);
+              executeButton.click();
               executionTracker.cleanupBlock(blockId);
+            } else {
+              logger.debug(`Auto-execute: Execute button not found (attempt ${attempts}/${MAX_AUTO_EXECUTE_ATTEMPTS})`);
+              if (attempts < MAX_AUTO_EXECUTE_ATTEMPTS) {
+                setupAutoExecution();
+              } else {
+                logger.debug(`Auto-execute: Giving up on block ${blockId} - button not found`);
+                executionTracker.cleanupBlock(blockId);
+              }
             }
-          }
+          });
         },
         autoExecuteDelay + 500, // Add base delay to the configured delay
       );
     };
 
     setupAutoExecution();
+  },
+
+  /**
+   * Wait until the assistant response has finished streaming (or the timeout
+   * expires) before invoking the callback. On sites where the streaming state
+   * cannot be detected the callback fires immediately.
+   */
+  waitForResponseComplete: (blockId: string, onComplete: () => void, maxWaitMs: number = 180000): void => {
+    const startedAt = Date.now();
+
+    const check = () => {
+      if (!isResponseStreaming()) {
+        onComplete();
+        return;
+      }
+
+      if (Date.now() - startedAt >= maxWaitMs) {
+        logger.debug(`Auto-execute: Timed out waiting for response to complete for block ${blockId}`);
+        executionTracker.cleanupBlock(blockId);
+        return;
+      }
+
+      PerformanceUtils.setManagedTimeout(`auto-exec-wait-${blockId}`, check, 500);
+    };
+
+    check();
   },
 
   findReplacementBlock: (functionDetails: any): HTMLDivElement | null => {
@@ -1539,6 +1627,18 @@ export const renderFunctionCall = (block: HTMLPreElement, isProcessingRef: { cur
       if (contentSignature && !executionTracker.isFunctionExecuted(callId, contentSignature, functionName)) {
         if (autoExecuteEnabled !== true) {
           logger.debug(`Auto-execution disabled by user settings for block ${blockId} (${functionName})`);
+          return true;
+        }
+
+        // Blocks inside a chain-of-thought container (e.g. DeepSeek
+        // .ds-think-content) are the model's internal planning, not final
+        // tool-call decisions. Render them (manual Run stays available) but
+        // never auto-execute, and do not mark them executed so a later
+        // occurrence in the final answer still auto-runs.
+        if (isInsideThinkingContainer(block)) {
+          logger.debug(
+            `Auto-execution skipped: Block ${blockId} (${functionName}) is inside a thinking/reasoning container`,
+          );
           return true;
         }
 

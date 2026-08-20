@@ -549,7 +549,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const currentAdapterReg = adapterStore.getActiveAdapter();
   const adapter = currentAdapterReg?.instance;
 
-  if (message.command === 'getStats') {
+  if (message.type === 'mcp:tool-progress') {
+    // Keep-alive signal from a long-running tool. Transport-level only —
+    // never injected into the conversation; UI can subscribe via eventBus.
+    const p = message.payload || {};
+    logMessage(`Tool progress: ${p.toolName} ${p.progress}${p.total != null ? '/' + p.total : ''}`);
+    eventBus.emit('mcp:tool-progress', {
+      toolName: p.toolName,
+      adapterName: p.adapterName,
+      requestId: p.requestId,
+      progress: p.progress ?? 0,
+      total: p.total,
+      message: p.message,
+      timestamp: p.timestamp ?? Date.now(),
+    });
+    sendResponse({ success: true });
+  } else if (message.command === 'getStats') {
     sendResponse({
       success: true,
       stats: {

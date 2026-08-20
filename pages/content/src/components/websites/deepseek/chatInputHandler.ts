@@ -268,6 +268,11 @@ export const submitChatInput = async (maxWaitTime = 5000): Promise<boolean> => {
 
     // First try to find a submit button
     const submitButtonSelectors = [
+      // DeepSeek's send button is a div[role="button"] with no aria-label -
+      // scope to the input area to avoid matching unrelated circle buttons
+      '.bf38813a div[role="button"].ds-button--circle',
+      '.ec4f5d61 div[role="button"].ds-button--circle',
+      'div[role="button"].ds-button--circle',
       // 'button[type="submit"]',
       'button[aria-label="Submit"]',
       'button.send-button',

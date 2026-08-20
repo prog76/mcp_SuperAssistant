@@ -25,12 +25,16 @@ export { SSEPlugin, WebSocketPlugin, WebSocketTransport };
 export { DEFAULT_CLIENT_CONFIG };
 
 // Re-export types
-export type { 
-  ITransportPlugin, 
-  PluginMetadata, 
-  PluginConfig, 
-  TransportType 
+export type {
+  ITransportPlugin,
+  PluginMetadata,
+  PluginConfig,
+  TransportType,
+  ToolCallOptions,
+  ToolCallProgress
 } from './types/plugin.js';
+
+export { TOOL_CALL_TIMEOUTS } from './types/plugin.js';
 
 export type { 
   ClientConfig, 
@@ -165,7 +169,8 @@ export async function callToolWithBackwardsCompatibility(
   toolName: string,
   args: { [key: string]: unknown },
   adapterName?: string,
-  transportType?: import('./types/plugin.js').TransportType
+  transportType?: import('./types/plugin.js').TransportType,
+  options?: import('./types/plugin.js').ToolCallOptions
 ): Promise<any> {
   const client = await getGlobalClient();
   const type = transportType || detectTransportType(uri);
@@ -174,7 +179,7 @@ export async function callToolWithBackwardsCompatibility(
     await client.connect({ uri, type });
   }
 
-  return await client.callTool(toolName, args, adapterName);
+  return await client.callTool(toolName, args, adapterName, options);
 }
 
 export async function getPrimitivesWithBackwardsCompatibility(

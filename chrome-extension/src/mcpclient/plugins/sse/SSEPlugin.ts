@@ -3,7 +3,8 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import type { ITransportPlugin, PluginMetadata, PluginConfig } from '../../types/plugin.js';
+import type { ITransportPlugin, PluginMetadata, PluginConfig, ToolCallOptions } from '../../types/plugin.js';
+import { TOOL_CALL_TIMEOUTS } from '../../types/plugin.js';
 import type { SSEPluginConfig } from '../../types/config.js';
 import { createLogger } from '@extension/shared/lib/logger';
 
@@ -142,7 +143,7 @@ export class SSEPlugin implements ITransportPlugin {
     }
   }
 
-  async callTool(client: Client, toolName: string, args: any): Promise<any> {
+  async callTool(client: Client, toolName: string, args: any, options?: ToolCallOptions): Promise<any> {
     if (!this.isConnected()) {
       throw new Error('SSE Plugin: Not connected');
     }
@@ -150,7 +151,12 @@ export class SSEPlugin implements ITransportPlugin {
     logger.debug(`Calling tool: ${toolName}`);
 
     try {
-      const result = await client.callTool({ name: toolName, arguments: args });
+      const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
+        timeout: options?.timeout ?? TOOL_CALL_TIMEOUTS.idleTimeout,
+        resetTimeoutOnProgress: true,
+        maxTotalTimeout: options?.maxTotalTimeout ?? TOOL_CALL_TIMEOUTS.maxTotalTimeout,
+        onprogress: options?.onProgress,
+      });
       logger.debug(`Tool call completed: ${toolName}`);
       return result;
     } catch (error) {

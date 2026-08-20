@@ -196,7 +196,6 @@ function categorizeToolError(error: Error): { isConnectionError: boolean; isTool
   const connectionErrorPatterns = [
     /connection refused/i,
     /econnrefused/i,
-    /timeout/i,
     /etimedout/i,
     /enotfound/i,
     /network error/i,
@@ -213,6 +212,14 @@ function categorizeToolError(error: Error): { isConnectionError: boolean; isTool
   if (toolErrorPatterns.some(pattern => pattern.test(errorMessage))) {
     return { isConnectionError: false, isToolError: true, category: 'tool_error' };
   }
+
+  // A client-side request timeout (e.g. long-running tool that exceeded its
+  // idle/total timeout) is a tool-level outcome, NOT a connection problem.
+  // It must be checked before the generic /timeout/i connection patterns.
+  if (/request timed out|request timeout/i.test(errorMessage)) {
+    return { isConnectionError: false, isToolError: true, category: 'tool_error' };
+  }
+
 
   // Check connection errors
   if (connectionErrorPatterns.some(pattern => pattern.test(errorMessage))) {
@@ -702,8 +709,46 @@ async function handleMcpMessage(
         }
 
         logger.debug(`Calling tool: ${toolName} from adapter: ${adapterName || 'unknown'}`);
-        result = await callToolWithBackwardsCompatibility(getServerUrl(), toolName, args || {}, adapterName);
-        logger.debug(`Tool call completed: ${toolName}`);
+
+        // Keep-alive for long-running tools: forward server progress notifications
+        // to content scripts. These are transport-level signals and are never shown
+        // to the assistant; each one resets the SDK's idle timeout on the client.
+        let lastProgressAt = 0;
+        const onProgress = (progress: import('../mcpclient/types/plugin.js').ToolCallProgress) => {
+          lastProgressAt = Date.now();
+          const progressMessage = {
+            type: 'mcp:tool-progress',
+            payload: {
+              toolName,
+              adapterName,
+              requestId: message.id,
+              progress: progress.progress,
+              total: progress.total,
+              message: progress.message,
+              timestamp: Date.now(),
+            },
+          };
+          // Prefer replying to the tab that issued the call
+          if (sender.tab?.id != null) {
+            chrome.tabs.sendMessage(sender.tab.id, progressMessage).catch(() => {});
+          } else {
+            chrome.tabs.query({}, tabs => {
+              tabs.forEach(tab => {
+                if (tab.id != null) {
+                  chrome.tabs.sendMessage(tab.id, progressMessage).catch(() => {});
+                }
+              });
+            });
+          }
+        };
+
+        result = await callToolWithBackwardsCompatibility(getServerUrl(), toolName, args || {}, adapterName, undefined, { onProgress });
+
+        if (lastProgressAt > 0) {
+          logger.debug(`Tool call completed (with keep-alive progress): ${toolName}`);
+        } else {
+          logger.debug(`Tool call completed: ${toolName}`);
+        }
         break;
       }
 

@@ -27,14 +27,14 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
 
   // CSS selectors for DeepSeek's UI elements
   // Updated selectors based on current DeepSeek interface (chat.deepseek.com)
-  // The submit button is the nextElementSibling of the file input element
   private readonly selectors = {
-    // Primary chat input selector - DeepSeek uses a textarea with placeholder="Message DeepSeek"
-    // Includes Chinese-locale placeholders and name="search" (from jcleng's fix for chinese UI)
+    // Primary chat input selector - includes Chinese-locale placeholders (jcleng fix)
     CHAT_INPUT: 'textarea[name="search"], textarea[placeholder*="给 DeepSeek 发送消息"], textarea[placeholder*="Message DeepSeek"], textarea.ds-scroll-area, textarea:not([type="hidden"])',
-    // Submit button: DeepSeek uses a button element as the next sibling of input[type="file"]
-    // Based on reverse engineering: getSendButton() = document.querySelector('input[type="file"]')?.nextElementSibling
-    SUBMIT_BUTTON: 'input[type="file"]',
+    // Submit button selectors (multiple fallbacks), from hqzqaq/huquanzhi_a fork (b0c7856).
+    // NOTE: DeepSeek's send button is a div[role="button"] with NO aria-label,
+    // identified by the ds- design-system circular button classes inside the
+    // input area (.bf38813a = right-side button group of the input toolbar).
+    SUBMIT_BUTTON: '.bf38813a div[role="button"].ds-button--circle, .ec4f5d61 div[role="button"].ds-button--circle, div[role="button"].ds-button--circle, button[aria-label*="Send"], button[data-testid="send-button"], button.send-button',
     // File upload related selectors
     FILE_UPLOAD_BUTTON: 'button[aria-label*="attach"], button[aria-label*="file"], input[type="file"]',
     FILE_INPUT: 'input[type="file"]',
@@ -424,57 +424,147 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
    */
   async submitForm(options?: { formElement?: HTMLFormElement }): Promise<boolean> {
     this.context.logger.debug('Attempting to submit DeepSeek chat input');
+  async submitForm(options?: { formElement?: HTMLFormElement }): Promise<boolean> {
+    this.context.logger.debug('Attempting to submit DeepSeek chat input');
 
-    // Verify submit button exists (fileInput -> nextElementSibling)
-    const fileInput = document.querySelector(this.selectors.SUBMIT_BUTTON) as HTMLInputElement;
-    if (!fileInput) {
-      this.context.logger.error('Could not find file input to locate send button');
-      this.emitExecutionFailed('submitForm', 'File input not found');
-      return false;
+    let submitButton: HTMLElement | null = null;
+    let matchedSelector = '';
+
+    // Try multiple selectors for better compatibility
+    const selectors = this.selectors.SUBMIT_BUTTON.split(', ');
+    for (const selector of selectors) {
+      submitButton = document.querySelector(selector.trim()) as HTMLElement | null;
+      if (submitButton) {
+        matchedSelector = selector.trim();
+        this.context.logger.debug(`Found submit button using selector: ${matchedSelector}`);
+        break;
+      }
     }
 
-    const submitButton = fileInput.nextElementSibling as HTMLElement | null;
     if (!submitButton) {
-      this.context.logger.error('Could not find send button next to file input');
-      this.emitExecutionFailed('submitForm', 'Send button not found');
-      return false;
-    }
-
-    this.context.logger.debug('Submit button detected, proceeding with KeyboardEvent submit');
-
-    // Get the chat input element
-    const entry = this.getInputElement();
-    if (!entry) {
-      this.context.logger.error('Could not find chat input element');
-      this.emitExecutionFailed('submitForm', 'Chat input element not found');
-      return false;
+      this.context.logger.warn('Could not find DeepSeek submit button, trying Enter key press');
+      return this.tryEnterKeySubmission();
     }
 
     try {
-      // Dispatch Enter keydown event on the chat input
-      entry.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true
-      }));
+      // Check if the button is disabled.
+      // div[role="button"] elements expose the disabled state via the
+      // ds-button--disabled class instead of the `disabled` property.
+      const isDisabled =
+        (submitButton as HTMLButtonElement).disabled === true ||
+        submitButton.classList.contains('ds-button--disabled');
+      if (isDisabled) {
+        this.context.logger.warn('DeepSeek submit button is disabled');
+        this.emitExecutionFailed('submitForm', 'Submit button is disabled');
+        return false;
+      }
 
-      this.emitExecutionCompleted('submitForm', {}, {
+      // Never click while the model is still generating: the same circular
+      // button doubles as the "stop generation" control, and clicking it
+      // would abort the in-flight response.
+      if (this.isStopButton(submitButton)) {
+        this.context.logger.warn('DeepSeek action button is currently the stop button (generation in progress), refusing to click');
+        this.emitExecutionFailed('submitForm', 'Generation in progress - refusing to click stop button');
+        return false;
+      }
+
+      // Check if the button is visible and clickable
+      const rect = submitButton.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {
+        this.context.logger.warn('DeepSeek submit button is not visible');
+        this.emitExecutionFailed('submitForm', 'Submit button is not visible');
+        return false;
+      }
+
+      // Click the submit button to send the message
+      submitButton.click();
+
+      // Emit success event to the new event system
+      this.emitExecutionCompleted('submitForm', {
+        formElement: options?.formElement?.tagName || 'unknown'
+      }, {
         success: true,
-        method: 'keyboardEvent'
+        method: 'submitButton.click',
+        buttonSelector: matchedSelector
       });
 
-      this.context.logger.debug('DeepSeek chat input submitted successfully via KeyboardEvent');
+      this.context.logger.debug('DeepSeek chat input submitted successfully');
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.context.logger.error(`Error submitting via KeyboardEvent: ${errorMessage}`);
+      this.context.logger.error(`Error submitting DeepSeek chat input: ${errorMessage}`);
       this.emitExecutionFailed('submitForm', errorMessage);
       return false;
     }
   }
 
+  /**
+   * Detect whether the circular action button is currently in "stop
+   * generation" mode.
+   *
+   * While the assistant is streaming, DeepSeek swaps the send arrow for a
+   * filled square (stop icon). The square icon's SVG path is a single
+   * subpath starting with "M2 4.88" - this is a heuristic and may need
+   * updating if DeepSeek changes its icon set.
+   */
+  private isStopButton(button: HTMLElement): boolean {
+    try {
+      const svgPath = button.querySelector('svg path');
+      const d = svgPath?.getAttribute('d')?.trim() || '';
+      return d.startsWith('M2 4.88');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Try to submit using Enter key press as fallback
+   */
+  private async tryEnterKeySubmission(): Promise<boolean> {
+    try {
+      // Find the chat input element
+      const chatInput = document.querySelector(this.selectors.CHAT_INPUT.split(', ')[0].trim()) as HTMLElement;
+      
+      if (!chatInput) {
+        this.context.logger.error('Cannot find chat input for Enter key submission');
+        this.emitExecutionFailed('submitForm', 'Chat input not found for Enter key submission');
+        return false;
+      }
+
+      // Create and dispatch Enter key event
+      const enterKeyEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      });
+
+      chatInput.focus();
+      chatInput.dispatchEvent(enterKeyEvent);
+
+      // Emit success event
+      this.emitExecutionCompleted('submitForm', {}, {
+        success: true,
+        method: 'enterKey',
+        fallback: true
+      });
+
+      this.context.logger.debug('DeepSeek chat input submitted using Enter key');
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.context.logger.error(`Error submitting DeepSeek chat input via Enter key: ${errorMessage}`);
+      this.emitExecutionFailed('submitForm', errorMessage);
+      return false;
+    }
+  }
+
+  /**
+   * Attach a file to the DeepSeek chat input
+   * Enhanced with better error handling and integration with new architecture
+   */
   /**
    * Attach a file to the DeepSeek chat input
    * Enhanced with better error handling and integration with new architecture
@@ -1000,10 +1090,15 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
       reactContainer.style.display = 'inline-block';
       // Remove margin to let button handle its own spacing
 
-      // Insert at appropriate location
+      // Insert at appropriate location.
+      // Always insert relative to the anchor element's actual parent so the
+      // button lands inline with the toolbar row (next to the toggle
+      // buttons, left of the send button). Appending to the outer container
+      // instead would drop the button after the whole row - to the right of
+      // the send button - breaking the native layout.
       const { container, insertAfter } = insertionPoint;
-      if (insertAfter && insertAfter.parentNode === container) {
-        container.insertBefore(reactContainer, insertAfter.nextSibling);
+      if (insertAfter && insertAfter.parentNode) {
+        insertAfter.parentNode.insertBefore(reactContainer, insertAfter.nextSibling);
         this.context.logger.debug('Inserted popover container after specified element');
       } else {
         container.appendChild(reactContainer);

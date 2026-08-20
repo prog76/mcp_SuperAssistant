@@ -76,6 +76,7 @@ async function initializeStoreAccess() {
 // Type definitions for automation events
 export interface ToolExecutionCompleteDetail {
   result?: string;
+  isError?: boolean;
   isFileAttachment?: boolean;
   file?: File;
   fileName?: string;

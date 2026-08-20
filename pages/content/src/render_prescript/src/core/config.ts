@@ -33,6 +33,7 @@ export const DEFAULT_CONFIG: FunctionCallRendererConfig = {
   targetSelectors: ['pre', 'code'],
   enableDirectMonitoring: true,
   streamingContainerSelectors: ['.pre', '.code'],
+  thinkingContainerSelectors: [], // Empty by default, populated by website-specific configs
   function_result_selector: [], // Empty by default, will be populated by website-specific configs
   // streamingContainerSelectors: ['.message-content', '.chat-message', '.message-body', '.message'],
   updateThrottle: 25,
@@ -154,6 +155,11 @@ export const WEBSITE_CONFIGS: Array<{
       config: {
         targetSelectors: ['pre', 'code'],
         streamingContainerSelectors: ['pre', 'code'],
+        // DeepSeek renders the model's chain of thought inside
+        // .ds-think-content; the final answer lives in
+        // .ds-markdown.ds-assistant-message-main-content. Tool calls that
+        // only appear in the thinking section must never be auto-executed.
+        thinkingContainerSelectors: ['.ds-think-content'],
         function_result_selector: ['div._9663006'],
       },
     },
