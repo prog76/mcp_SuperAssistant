@@ -16,6 +16,13 @@ export {
   type ToolExecutionCompleteDetail
 } from './automation.service';
 
+export {
+  CompactionService,
+  compactionService,
+  type CompactionOptions,
+  type CompactResult,
+} from './compaction.service';
+
 // Export initialization function for all services
 export async function initializeAllServices(): Promise<void> {
   logger.debug('[Services] Initializing all application services...');

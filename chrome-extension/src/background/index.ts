@@ -18,6 +18,7 @@ import {
 } from '../mcpclient/index';
 import { sendAnalyticsEvent, trackError, collectDemographicData } from '../../utils/analytics';
 import { analyticsService } from '../../utils/analytics-service';
+import { archivePut, archiveGet } from './compaction-storage';
 
 // Import message types for type safety
 import type {
@@ -676,10 +677,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep channel open for async response
   }
 
+  /* ------------------------------------------------------------------ */
+  /* 上下文压缩存档（扩展 origin IndexedDB）                              */
+  /* ------------------------------------------------------------------ */
+  if (typeof message.type === 'string' && message.type.startsWith('compaction:')) {
+    handleCompactionMessage(message, sendResponse);
+    return true; // Keep channel open for async response
+  }
+
   // Fallback – message not handled here
   logger.debug('[Background] Message not handled, ignoring:', message.type || message.command);
   return false;
 });
+
+/**
+ * 上下文压缩存档消息处理（transcript / summary 大文本读写扩展 origin 的 IndexedDB）。
+ */
+async function handleCompactionMessage(message: any, sendResponse: (response: any) => void) {
+  try {
+    let result: any = null;
+    switch (message.type) {
+      case 'compaction:archive-put': {
+        const { id, content } = message.payload || {};
+        if (typeof id !== 'string' || typeof content !== 'string') {
+          throw new Error('compaction:archive-put requires id and content');
+        }
+        result = await archivePut({ id, content, createdAt: Date.now() });
+        break;
+      }
+      case 'compaction:archive-get': {
+        const { id } = message.payload || {};
+        if (typeof id !== 'string') {
+          throw new Error('compaction:archive-get requires id');
+        }
+        result = await archiveGet(id);
+        break;
+      }
+      default:
+        throw new Error(`Unhandled compaction message type: ${message.type}`);
+    }
+    sendResponse({ success: true, data: result, timestamp: Date.now() });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error(`Compaction message handling error (${message.type}):`, error);
+    sendResponse({ success: false, error: errorMessage, timestamp: Date.now() });
+  }
+}
 
 /**
  * Enhanced MCP message handler with proper error handling, type safety, and response formatting

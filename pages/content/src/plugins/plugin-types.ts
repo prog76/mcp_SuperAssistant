@@ -22,7 +22,9 @@ export type AdapterCapability =
   | 'url-navigation'
   | 'element-selection'
   | 'screenshot-capture'
-  | 'dom-manipulation';
+  | 'dom-manipulation'
+  | 'conversation-read'      // 读取当前会话全文（上下文压缩/多智能体）
+  | 'conversation-create';   // 新建会话
 
 export type PluginType =
   | 'sidebar'
@@ -69,6 +71,27 @@ export interface PluginUtils {
   getUniqueId: (prefix?: string) => string;
 }
 
+/**
+ * 会话中的一条消息（纯文本，HTML 已剥离）。
+ * 用于上下文压缩的 readConversation / 多智能体的 readLastResponse。
+ */
+export interface ConversationMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;           // 纯文本（HTML 已剥离，代码块保留 markdown 围栏）
+  timestamp?: number;
+  messageId?: string;        // 平台原生消息 id，用于去重/续读
+}
+
+/**
+ * AI 回复载荷（多模态：文本 + 代码块 + 文件链接）。
+ */
+export interface ResponsePayload {
+  text: string;
+  codeBlocks?: { lang: string; code: string }[];
+  fileLinks?: string[];
+  rawHtml?: string;
+}
+
 export interface AdapterPlugin {
   readonly name: string;
   readonly version: string;
@@ -93,6 +116,16 @@ export interface AdapterPlugin {
   selectElement?(selector: string): Promise<HTMLElement | null>;
   navigateToUrl?(url: string): Promise<boolean>;
   executeScript?<T>(script: string | (() => T)): Promise<T | null>;
+
+  // Conversation capabilities (上下文压缩 / 多智能体协作)
+  readConversation?(): Promise<ConversationMessage[] | null>;
+  newConversation?(): Promise<boolean>;
+  readLastResponse?(): Promise<ResponsePayload | null>;
+  waitForResponse?(timeoutMs: number): Promise<boolean>;
+
+  // 会话模式：读取/恢复当前平台会话模式（如 DeepSeek 快速/专家/识图）
+  getConversationMode?(): Promise<string | null>;
+  setConversationMode?(mode: string): Promise<boolean>;
 
   // Utility methods
   isSupported(): boolean | Promise<boolean>;

@@ -1,5 +1,5 @@
 import { BaseAdapterPlugin } from './base.adapter';
-import type { AdapterCapability, PluginContext } from '../plugin-types';
+import type { AdapterCapability, PluginContext, ConversationMessage, ResponsePayload } from '../plugin-types';
 import { createLogger } from '@extension/shared/lib/logger';
 
 /**
@@ -22,7 +22,9 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
     'text-insertion',
     'form-submission',
     'file-attachment',
-    'dom-manipulation'
+    'dom-manipulation',
+    'conversation-read',
+    'conversation-create'
   ];
 
   // CSS selectors for DeepSeek's UI elements
@@ -47,7 +49,20 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
     // Button insertion points (for MCP popover) - DeepSeek specific
     BUTTON_INSERTION_CONTAINER: '.ec4f5d61, .chat-input-actions, .input-actions, .actions-wrapper',
     // Alternative insertion points
-    FALLBACK_INSERTION: '.input-area, .chat-input-container, ._24fad49, .bf38813a, .aaff8b8f'
+    FALLBACK_INSERTION: '.input-area, .chat-input-container, ._24fad49, .bf38813a, .aaff8b8f',
+    // Conversation reading selectors.
+    // NOTE: reuses the battle-tested selectors from render_prescript/src/core/config.ts
+    // (user message div._9663006 / assistant .ds-markdown.ds-assistant-message-main-content /
+    // thinking .ds-think-content). data-message-author-role is a ChatGPT attribute, NOT DeepSeek.
+    MESSAGE_USER: 'div._9663006',
+    MESSAGE_ASSISTANT: '.ds-markdown.ds-assistant-message-main-content',
+    MESSAGE_THINKING: '.ds-think-content',
+    // New chat button (SPA click preferred over full page navigation)
+    NEW_CHAT_BUTTON: 'button[aria-label*="New chat" i], button[aria-label*="新建" i], [data-testid="new-chat-button"]',
+    // Mode toggle chips。实测（2026-08）：
+    // - 新建会话页：div[role=radio][data-model-type]（default=快速 / expert=专家 / vision=识图），aria-checked 标记激活
+    // - 会话内：标题栏徽章 span 文本「专家模式/快速模式/识图模式」
+    MODE_TOGGLE: 'button, [role="button"], [role="radio"], [class*="toggle"]'
   };
 
   // URL patterns for navigation tracking
@@ -425,19 +440,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
   async submitForm(options?: { formElement?: HTMLFormElement }): Promise<boolean> {
     this.context.logger.debug('Attempting to submit DeepSeek chat input');
 
-    let submitButton: HTMLElement | null = null;
-    let matchedSelector = '';
-
-    // Try multiple selectors for better compatibility
-    const selectors = this.selectors.SUBMIT_BUTTON.split(', ');
-    for (const selector of selectors) {
-      submitButton = document.querySelector(selector.trim()) as HTMLElement | null;
-      if (submitButton) {
-        matchedSelector = selector.trim();
-        this.context.logger.debug(`Found submit button using selector: ${matchedSelector}`);
-        break;
-      }
-    }
+    const submitButton = this.findSubmitButton();
 
     if (!submitButton) {
       this.context.logger.warn('Could not find DeepSeek submit button, trying Enter key press');
@@ -483,7 +486,7 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
       }, {
         success: true,
         method: 'submitButton.click',
-        buttonSelector: matchedSelector
+        buttonSelector: submitButton.className
       });
 
       this.context.logger.debug('DeepSeek chat input submitted successfully');
@@ -556,6 +559,402 @@ export class DeepSeekAdapter extends BaseAdapterPlugin {
       this.context.logger.error(`Error submitting DeepSeek chat input via Enter key: ${errorMessage}`);
       this.emitExecutionFailed('submitForm', errorMessage);
       return false;
+    }
+  }
+
+  /**
+   * Find the submit button using multiple selector fallbacks.
+   * Shared by submitForm and waitForResponse.
+   */
+  private findSubmitButton(): HTMLElement | null {
+    const selectors = this.selectors.SUBMIT_BUTTON.split(', ');
+    for (const selector of selectors) {
+      const button = document.querySelector(selector.trim()) as HTMLElement | null;
+      if (button) {
+        this.context.logger.debug(`Found submit button using selector: ${selector.trim()}`);
+        return button;
+      }
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------
+  // Conversation capabilities (上下文压缩 / 多智能体协作)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Extract message text from a DOM node, best-effort HTML → plain text:
+   * - code blocks (`pre`) are preserved as fenced markdown (```lang)
+   * - block-level elements become newlines
+   * - rendered markdown is NOT reverse-parsed to source markdown (lossy by design)
+   */
+  private extractConversationText(element: HTMLElement): string {
+    const BLOCK_TAGS = new Set([
+      'P', 'DIV', 'BR', 'LI', 'PRE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TR', 'UL', 'OL', 'TABLE', 'HR', 'BLOCKQUOTE'
+    ]);
+    const parts: string[] = [];
+
+    const walk = (node: Node, depth: number): void => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parts.push(node.textContent ?? '');
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = (node as HTMLElement).tagName;
+      if (tag === 'PRE') {
+        const langEl = (node as HTMLElement).querySelector('code[class*="language-"]');
+        const lang = langEl?.className.match(/language-(\w+)/)?.[1] ?? '';
+        const code = ((node as HTMLElement).innerText || (node as HTMLElement).textContent || '').trim();
+        parts.push(`\`\`\`${lang}\n${code}\n\`\`\``);
+        return;
+      }
+      if (tag === 'BR') {
+        parts.push('\n');
+        return;
+      }
+      for (const child of Array.from(node.childNodes)) {
+        walk(child, depth + 1);
+      }
+      if (BLOCK_TAGS.has(tag) && depth > 0) {
+        parts.push('\n');
+      }
+    };
+
+    walk(element, 0);
+    return parts
+      .join('')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  /**
+   * Read the whole conversation (user + assistant messages) in document order.
+   * Reuses the verified DeepSeek selectors from render_prescript config.
+   */
+  async readConversation(): Promise<ConversationMessage[] | null> {
+    this.context.logger.debug('Reading DeepSeek conversation');
+
+    const userEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_USER));
+    const assistantEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_ASSISTANT));
+
+    if (userEls.length === 0 && assistantEls.length === 0) {
+      this.context.logger.warn('No conversation messages found on DeepSeek page');
+      return null;
+    }
+
+    // Merge in document order and skip nested duplicates
+    const messages: ConversationMessage[] = [];
+    const collected: Element[] = [];
+
+    const all = document.querySelectorAll(`${this.selectors.MESSAGE_USER}, ${this.selectors.MESSAGE_ASSISTANT}`);
+    all.forEach(el => {
+      if (collected.some(anc => anc.contains(el))) return; // nested duplicate
+      collected.push(el);
+      const isUser = el.matches(this.selectors.MESSAGE_USER);
+      messages.push({
+        role: isUser ? 'user' : 'assistant',
+        content: this.extractConversationText(el as HTMLElement),
+        timestamp: Date.now()
+      });
+    });
+
+    if (messages.length === 0) {
+      this.context.logger.warn('DeepSeek conversation parsed to zero messages');
+      return null;
+    }
+
+    this.context.logger.debug(`Read ${messages.length} messages from DeepSeek conversation`);
+    return messages;
+  }
+
+  /**
+   * Start a new conversation.
+   * 优先点击“新建对话”按钮（SPA 无刷新）；找不到时兜底派发 Ctrl+J 快捷键
+   * （DeepSeek 支持 Ctrl+J 新建会话）。不做整页导航，避免 content script 中断。
+   */
+  async newConversation(): Promise<boolean> {
+    this.context.logger.debug('Attempting to start a new DeepSeek conversation');
+
+    // 1. 点击“新建对话”按钮
+    const newChat = this.findNewChatButton();
+    if (newChat) {
+      newChat.click();
+      this.context.logger.debug('Clicked DeepSeek new chat button');
+      await this.sleep(600);
+      if (this.isFreshConversation()) return true;
+      this.context.logger.warn('New chat button click did not reset the conversation, trying Ctrl+J');
+    }
+
+    // 2. 兜底：派发 Ctrl+J 快捷键
+    this.dispatchNewChatShortcut();
+    await this.sleep(600);
+    if (this.isFreshConversation()) return true;
+
+    this.context.logger.warn('Failed to start a new DeepSeek conversation');
+    return false;
+  }
+
+  /**
+   * 判断当前是否为新会话（消息区无用户消息即视为新会话）。
+   * 用于校验 newConversation 是否真的重置了会话，避免把续接消息注入旧会话。
+   */
+  private isFreshConversation(): boolean {
+    try {
+      return document.querySelectorAll(this.selectors.MESSAGE_USER).length === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 查找“新建对话”按钮：先按文本（新建对话/New chat），再按加号图标启发式匹配。
+   */
+  private findNewChatButton(): HTMLElement | null {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, a, [role="button"]'));
+
+    // 文本匹配（实测 DeepSeek 会话页按钮文案为「开启新对话」，新建页为「新建对话」）
+    const byText = candidates.find(el => {
+      const t = (el.textContent ?? '').trim();
+      return (
+        t === '新建对话' ||
+        t === '开启新对话' ||
+        t === 'New chat' ||
+        t.startsWith('新建对话') ||
+        t.startsWith('开启新对话') ||
+        t.startsWith('New chat')
+      );
+    });
+    if (byText) return byText;
+
+    // 加号图标匹配（heroicons/lucide 风格 plus path）
+    const plusPattern = /M1[24]\s*[45]v1[46]|M1[24]\s*[45]h1[46]/;
+    const byIcon = candidates.find(el => {
+      const d = (el.querySelector('svg path')?.getAttribute('d') ?? '').replace(/\s+/g, '');
+      return plusPattern.test(d);
+    });
+    return byIcon ?? null;
+  }
+
+  /**
+   * 派发 Ctrl+J 新建会话快捷键。
+   */
+  private dispatchNewChatShortcut(): void {
+    try {
+      const input = document.querySelector<HTMLElement>(this.selectors.CHAT_INPUT.split(', ')[0].trim());
+      const target = input ?? document.body;
+      target.focus();
+      const event = new KeyboardEvent('keydown', {
+        key: 'j',
+        code: 'KeyJ',
+        keyCode: 74,
+        which: 74,
+        ctrlKey: true,
+        metaKey: false,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(event);
+    } catch (error) {
+      this.context.logger.error('Error dispatching Ctrl+J shortcut:', error);
+    }
+  }
+
+  /**
+   * 读取当前会话模式（快速 fast / 专家 expert / 识图 visual）。未检测到返回 null。
+   *
+   * 实测（2026-08）：
+   * - 会话内：标题栏徽章 span 文本「专家模式/快速模式/识图模式」
+   * - 新建会话页：div[role=radio][data-model-type] + aria-checked="true"
+   */
+  async getConversationMode(): Promise<string | null> {
+    // 1. 会话内徽章
+    const badge = this.findModeBadge();
+    if (badge) {
+      this.context.logger.debug(`DeepSeek conversation mode (badge): ${badge}`);
+      return badge;
+    }
+
+    // 2. 新建页 radio
+    const activeRadio = this.findModeRadios().find(t => t.isActive);
+    if (activeRadio) {
+      this.context.logger.debug(`DeepSeek conversation mode (radio): ${activeRadio.mode}`);
+      return activeRadio.mode;
+    }
+
+    // 3. 文本启发式兜底
+    const activeToggle = this.findModeToggles().find(t => t.isActive);
+    if (activeToggle) {
+      this.context.logger.debug(`DeepSeek conversation mode (toggle): ${activeToggle.mode}`);
+      return activeToggle.mode;
+    }
+
+    this.context.logger.debug('No DeepSeek mode indicator found');
+    return null;
+  }
+
+  /**
+   * 恢复指定会话模式（新会话应与旧会话保持一致）。
+   * 优先点击新建页 radio（data-model-type），失败时文本匹配兜底。
+   */
+  async setConversationMode(mode: string): Promise<boolean> {
+    // 1. 新建页 radio（default/expert/vision）
+    const targetRadio = this.findModeRadios().find(t => t.mode === mode);
+    if (targetRadio) {
+      if (targetRadio.isActive) return true;
+      targetRadio.element.click();
+      this.context.logger.debug(`Clicked DeepSeek mode radio: ${mode}`);
+      await this.sleep(300);
+      return true;
+    }
+
+    // 2. 文本匹配兜底
+    const targetToggle = this.findModeToggles().find(t => t.mode === mode);
+    if (targetToggle) {
+      if (targetToggle.isActive) return true;
+      targetToggle.element.click();
+      this.context.logger.debug(`Clicked DeepSeek mode toggle: ${mode}`);
+      await this.sleep(300);
+      return true;
+    }
+
+    this.context.logger.warn(`DeepSeek mode '${mode}' toggle not found`);
+    return false;
+  }
+
+  /**
+   * 会话内模式徽章识别：标题栏 span 文本「专家模式/快速模式/识图模式」。
+   */
+  private findModeBadge(): string | null {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('span, div, a'));
+    for (const el of candidates) {
+      const t = (el.textContent ?? '').trim();
+      if (!t || t.length > 8) continue;
+      if (t === '专家模式' || t === '专家') return 'expert';
+      if (t === '识图模式' || t === '识图') return 'visual';
+      if (t === '快速模式' || t === '快速') return 'fast';
+    }
+    return null;
+  }
+
+  /**
+   * 新建会话页模式 radio（div[role=radio][data-model-type]）。
+   */
+  private findModeRadios(): Array<{ mode: string; element: HTMLElement; isActive: boolean }> {
+    const TYPE_TO_MODE: Record<string, string> = { default: 'fast', expert: 'expert', vision: 'visual' };
+    return Array.from(document.querySelectorAll<HTMLElement>('[role=radio][data-model-type]')).map(el => ({
+      mode: TYPE_TO_MODE[el.getAttribute('data-model-type') ?? ''] ?? (el.getAttribute('data-model-type') ?? ''),
+      element: el,
+      isActive: el.getAttribute('aria-checked') === 'true',
+    }));
+  }
+
+  /**
+   * 查找模式开关（快速/深度思考-专家/识图）。文本匹配标签，启发式判断 active。
+   */
+  private findModeToggles(): Array<{ mode: string; element: HTMLElement; isActive: boolean }> {
+    const LABEL_PATTERNS: Array<{ mode: string; re: RegExp }> = [
+      { mode: 'fast', re: /^(快速|Fast)$/i },
+      { mode: 'expert', re: /^(深度思考|专家|DeepThink|R1|Expert)/i },
+      { mode: 'visual', re: /^(识图|图像|视觉|Image|Vision)/i },
+    ];
+
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MODE_TOGGLE));
+    const found: Array<{ mode: string; element: HTMLElement; isActive: boolean }> = [];
+    for (const el of candidates) {
+      const text = (el.textContent ?? '').trim();
+      if (!text) continue;
+      for (const { mode, re } of LABEL_PATTERNS) {
+        if (re.test(text)) {
+          found.push({ mode, element: el, isActive: this.isToggleActive(el) });
+          break;
+        }
+      }
+    }
+    return found;
+  }
+
+  /**
+   * 判断开关是否处于激活态（aria / 类名启发式）。
+   */
+  private isToggleActive(el: HTMLElement): boolean {
+    if (el.getAttribute('aria-pressed') === 'true') return true;
+    if (el.getAttribute('aria-selected') === 'true') return true;
+    if (el.getAttribute('aria-checked') === 'true') return true;
+    const cls = `${el.className || ''} ${el.parentElement?.className || ''}`;
+    return /(^|[\s_-])(active|selected|checked)([\s_-]|$)/i.test(cls);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Read the last assistant response (text + code blocks).
+   */
+  async readLastResponse(): Promise<ResponsePayload | null> {
+    this.context.logger.debug('Reading last DeepSeek assistant response');
+
+    const assistantEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_ASSISTANT));
+    if (assistantEls.length === 0) {
+      this.context.logger.warn('No assistant messages found');
+      return null;
+    }
+
+    const last = assistantEls[assistantEls.length - 1];
+    const text = this.extractConversationText(last);
+
+    const codeBlocks: { lang: string; code: string }[] = [];
+    last.querySelectorAll('pre').forEach(pre => {
+      const langEl = pre.querySelector('code[class*="language-"]');
+      const lang = langEl?.className.match(/language-(\w+)/)?.[1] ?? '';
+      const code = (pre.innerText || pre.textContent || '').trim();
+      codeBlocks.push({ lang, code });
+    });
+
+    return { text, codeBlocks, rawHtml: last.innerHTML };
+  }
+
+  /**
+   * Wait until the model finishes generating a response.
+   * Stop condition (2 of 2): saw generation start + stop icon gone + no new
+   * mutations for 2s. Mirrors the design's "三条件取二" strategy; requires
+   * that generation actually started to avoid false-positive on a quiet page.
+   */
+  async waitForResponse(timeoutMs: number = 60_000): Promise<boolean> {
+    this.context.logger.debug(`Waiting for DeepSeek response (timeout ${timeoutMs}ms)`);
+
+    const messageArea = document.querySelector(this.selectors.MAIN_PANEL) ?? document.body;
+    let lastMutation = Date.now();
+    const observer = new MutationObserver(() => {
+      lastMutation = Date.now();
+    });
+    observer.observe(messageArea, { childList: true, subtree: true, characterData: true });
+
+    let sawGeneration = false;
+    const check = (): boolean => {
+      const sendButton = this.findSubmitButton();
+      const isGenerating = !!sendButton && this.isStopButton(sendButton);
+      if (isGenerating) sawGeneration = true;
+      const stopIconGone = !sendButton || !isGenerating;
+      const idleFor = Date.now() - lastMutation;
+      const conditions = [stopIconGone, idleFor > 2_000].filter(Boolean).length;
+      return sawGeneration && conditions >= 2;
+    };
+
+    const start = Date.now();
+    try {
+      while (Date.now() - start < timeoutMs) {
+        if (check()) {
+          this.context.logger.debug('DeepSeek response finished');
+          return true;
+        }
+        await new Promise(resolve => setTimeout(resolve, 400));
+      }
+      this.context.logger.warn(`Timed out waiting for DeepSeek response after ${timeoutMs}ms`);
+      return false;
+    } finally {
+      observer.disconnect();
     }
   }
 

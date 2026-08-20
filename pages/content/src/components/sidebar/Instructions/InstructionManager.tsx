@@ -8,60 +8,12 @@ import { Typography } from '../ui';
 import { cn } from '@src/lib/utils';
 import { logMessage } from '@src/utils/helpers';
 import { createLogger } from '@extension/shared/lib/logger';
-
-// Create a global shared state for instructions
+import { instructionsState } from '@src/utils/instructions-state';
 
 const logger = createLogger('InstructionManager');
 
-export const instructionsState = {
-  instructions: '',
-  updating: false, // Flag to prevent circular updates
-  setInstructions: (newInstructions: string) => {
-    // Don't update if the value hasn't changed
-    if (instructionsState.instructions === newInstructions) {
-      return;
-    }
-
-    // Prevent recursive updates
-    if (instructionsState.updating) {
-      logger.warn('[InstructionsState] Prevented recursive update');
-      return;
-    }
-
-    // Set flag to prevent circular updates
-    instructionsState.updating = true;
-    instructionsState.instructions = newInstructions;
-
-    logger.debug(`Broadcasting instruction update to ${instructionsState.listeners.length} listeners`);
-
-    // Call all registered listeners when instructions change
-    try {
-      instructionsState.listeners.forEach((listener, index) => {
-        try {
-          listener(newInstructions);
-        } catch (error) {
-          logger.error(`Error in listener ${index}:`, error);
-        }
-      });
-    } finally {
-      // Reset flag immediately after all listeners have been called
-      instructionsState.updating = false;
-    }
-  },
-  listeners: [] as ((instructions: string) => void)[],
-  subscribe: (listener: (instructions: string) => void) => {
-    instructionsState.listeners.push(listener);
-    logger.debug(`Listener subscribed (total: ${instructionsState.listeners.length})`);
-    // Return unsubscribe function
-    return () => {
-      const index = instructionsState.listeners.indexOf(listener);
-      if (index !== -1) {
-        instructionsState.listeners.splice(index, 1);
-        logger.debug(`Listener unsubscribed (total: ${instructionsState.listeners.length})`);
-      }
-    };
-  },
-};
+// 全局共享状态已抽离到 utils/instructions-state.ts，这里保持再导出以兼容旧引用
+export { instructionsState };
 
 interface InstructionManagerProps {
   adapter: any;

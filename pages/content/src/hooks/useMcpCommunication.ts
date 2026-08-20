@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useMemo } from 'react';
 import { mcpClient } from '../core/mcp-client';
 import { useConnectionStatus, useAvailableTools, useServerConfig, useToolEnablement } from './useStores';
 import { useToolStore } from '../stores/tool.store';
+import { isInternalTool, executeInternalTool } from '../utils/internal-tools';
 import { logMessage } from '../utils/helpers';
 import type { ServerConfig, Tool, ConnectionType } from '../types/stores';
 
@@ -63,6 +64,11 @@ export const useMcpCommunication = () => {
    * Enhanced tool calling with validation and error handling
    */
   const callTool = useCallback(async (toolName: string, args: Record<string, unknown>) => {
+    // 内置工具（InternalToolProvider）：不依赖 MCP 连接，直接本地执行
+    if (isInternalTool(toolName)) {
+      return await executeInternalTool(toolName, args);
+    }
+
     if (!isInitialized) {
       throw new Error('Communication layer not initialized');
     }
@@ -349,8 +355,8 @@ export const useMcpCommunication = () => {
       input_schema: tool.input_schema
     }));
     
-    // Then filter out disabled tools
-    const enabledTools = normalized.filter(tool => isToolEnabled(tool.name));
+    // Then filter out disabled tools (internal tools are always enabled)
+    const enabledTools = normalized.filter(tool => isToolEnabled(tool.name) || isInternalTool(tool.name));
     
     // Only log when tools actually change (not on every render)
     if (enabledTools.length > 0) {

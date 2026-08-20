@@ -792,7 +792,7 @@ class PluginRegistry {
         version: '2.0.0',
         type: 'website-adapter',
         hostnames: ['chat.deepseek.com'],
-        capabilities: ['text-insertion', 'form-submission', 'file-attachment'],
+        capabilities: ['text-insertion', 'form-submission', 'file-attachment', 'conversation-read', 'conversation-create'],
         create: () => new DeepSeekAdapter(),
         config: {
           id: 'deepseek-adapter',

@@ -3,10 +3,19 @@ import { devtools } from 'zustand/middleware';
 import { eventBus } from '../events';
 import { getToolEnablementState, saveToolEnablementState } from '../utils/storage';
 import type { Tool, DetectedTool, ToolExecution } from '../types/stores';
+import { getInternalTools } from '../utils/internal-tools';
 import { createLogger } from '@extension/shared/lib/logger';
 
 
 const logger = createLogger('useToolStore');
+
+// 合并扩展内置工具（InternalToolProvider）：去掉与内置工具同名的外部工具，再追加内置工具。
+const mergeWithInternalTools = (tools: Tool[]): Tool[] => {
+  const internal = getInternalTools();
+  const internalNames = new Set(internal.map(t => t.name));
+  const external = tools.filter(t => !internalNames.has(t.name));
+  return [...external, ...internal];
+};
 
 export interface ToolState {
   availableTools: Tool[];
@@ -36,7 +45,8 @@ export interface ToolState {
 }
 
 const initialState: Omit<ToolState, 'setAvailableTools' | 'addDetectedTool' | 'clearDetectedTools' | 'startToolExecution' | 'updateToolExecution' | 'completeToolExecution' | 'getToolExecution' | 'enableTool' | 'disableTool' | 'enableAllTools' | 'disableAllTools' | 'isToolEnabled' | 'loadToolEnablementState'> = {
-  availableTools: [],
+  // 内置工具（InternalToolProvider）始终可见，即使未连接 MCP 也能执行
+  availableTools: getInternalTools(),
   detectedTools: [],
   toolExecutions: {},
   isExecuting: false,
@@ -51,9 +61,11 @@ export const useToolStore = create<ToolState>()(
       ...initialState,
 
       setAvailableTools: (tools: Tool[]) => {
-        set({ availableTools: tools });
-        logger.debug('[ToolStore] Available tools updated:', tools);
-        eventBus.emit('tool:list-updated', { tools });
+        // 合并扩展内置工具（InternalToolProvider）
+        const merged = mergeWithInternalTools(tools);
+        set({ availableTools: merged });
+        logger.debug('[ToolStore] Available tools updated:', merged);
+        eventBus.emit('tool:list-updated', { tools: merged });
         
         // Load tool enablement state from storage
         get().loadToolEnablementState();
