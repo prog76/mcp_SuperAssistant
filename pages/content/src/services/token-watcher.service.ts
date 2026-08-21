@@ -77,16 +77,30 @@ export class TokenWatcherService {
 
     const active = useAdapterStore.getState().getActiveAdapter();
     const plugin = active?.plugin;
-    if (
-      !plugin ||
-      active?.status !== 'active' ||
-      !plugin.capabilities.includes('conversation-read') ||
-      !plugin.readConversation
-    ) {
+    if (!plugin || active?.status !== 'active') {
       useTokenStore.getState().reset();
       return;
     }
 
+    // 阈值实时从偏好读取，避免与设置面板/持久化之间出现双源漂移
+    const maxTokens = this.resolveMaxTokens();
+    const store = useTokenStore.getState();
+    store.setThreshold(maxTokens);
+
+    // 1) 平台原生 token 优先，不依赖 readConversation：
+    //    AI Studio 直接轮询 ms-token-count 元素，空会话也生效
+    const native = await this.resolveNativeTokenCount(plugin);
+    if (native !== null) {
+      store.setCurrentTokens(native);
+      await this.maybeTrigger(native, maxTokens);
+      return;
+    }
+
+    // 2) 原生缺失 → 回落 readConversation + 字符估算
+    if (!plugin.capabilities.includes('conversation-read') || !plugin.readConversation) {
+      useTokenStore.getState().reset();
+      return;
+    }
     try {
       const messages = await plugin.readConversation();
       if (!messages || messages.length === 0) {
@@ -95,11 +109,7 @@ export class TokenWatcherService {
       }
       const transcript = messages.map(m => `${m.role}: ${m.content}`).join('\n\n');
       const estimate = estimateTokens(transcript);
-
-      // 阈值实时从偏好读取，避免与设置面板/持久化之间出现双源漂移
-      const maxTokens = this.resolveMaxTokens();
-      useTokenStore.getState().setThreshold(maxTokens);
-      useTokenStore.getState().setCurrentEstimate(estimate);
+      store.setCurrentTokens(estimate.estimatedTokens);
 
       await this.maybeTrigger(estimate.estimatedTokens, maxTokens);
     } catch (error) {
@@ -112,8 +122,23 @@ export class TokenWatcherService {
    */
   private resolveMaxTokens(): number {
     const raw = useUIStore.getState().preferences.autoCompactMaxTokens;
-    const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : 12_000;
-    return Math.min(60_000, Math.max(2_000, value));
+\2  }
+
+  /**
+   * 平台原生 token 数（如 AI Studio 的 ms-token-count）。实现不存在或
+   * 读不到时返回 null，由上层回落字符估算。
+   */
+  private async resolveNativeTokenCount(plugin: any): Promise<number | null> {
+    if (typeof plugin?.readNativeTokenCount === 'function') {
+      try {
+        const n = await plugin.readNativeTokenCount();
+        return typeof n === 'number' && Number.isFinite(n) ? n : null;
+      } catch (error) {
+        logger.warn('[TokenWatcher] 读取平台原生 token 失败（回落估算）:', error);
+        return null;
+      }
+    }
+    return null;
   }
 
   private async maybeTrigger(tokens: number, maxTokens: number): Promise<void> {

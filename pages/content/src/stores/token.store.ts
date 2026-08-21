@@ -15,6 +15,7 @@ export interface TokenState {
   lastSampledAt: number | null; // 最近一次成功采样时间
 
   setCurrentEstimate: (est: TokenEstimate) => void;
+  setCurrentTokens: (tokens: number) => void;
   setThreshold: (tokens: number) => void;
   reset: () => void;
 }
@@ -24,7 +25,7 @@ export const useTokenStore = create<TokenState>()(
     (set, get) => ({
       currentTokens: 0,
       tokenEstimate: null,
-      autoCompactMaxTokens: 12_000,
+      autoCompactMaxTokens: 512_000,
       isOverThreshold: false,
       lastSampledAt: null,
 
@@ -34,6 +35,15 @@ export const useTokenStore = create<TokenState>()(
           currentTokens: est.estimatedTokens,
           tokenEstimate: est,
           isOverThreshold: est.estimatedTokens >= threshold,
+          lastSampledAt: Date.now(),
+        });
+      },
+
+      setCurrentTokens: tokens => {
+        const threshold = get().autoCompactMaxTokens;
+        set({
+          currentTokens: tokens,
+          isOverThreshold: tokens >= threshold,
           lastSampledAt: Date.now(),
         });
       },

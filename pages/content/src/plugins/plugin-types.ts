@@ -123,6 +123,9 @@ export interface AdapterPlugin {
   readLastResponse?(): Promise<ResponsePayload | null>;
   waitForResponse?(timeoutMs: number): Promise<boolean>;
 
+  // 平台原生 token 数（如 AI Studio 的 ms-token-count）。返回 null 表示需由估算兜底。
+  readNativeTokenCount?(): Promise<number | null>;
+
   // 会话模式：读取/恢复当前平台会话模式（如 DeepSeek 快速/专家/识图）
   getConversationMode?(): Promise<string | null>;
   setConversationMode?(mode: string): Promise<boolean>;

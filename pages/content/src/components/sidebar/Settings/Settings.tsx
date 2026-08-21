@@ -251,10 +251,7 @@ const Settings: React.FC = () => {
               id="auto-compact-max-tokens"
               type="number"
               min={2000}
-              max={60000}
-              step={1000}
-              value={preferences.autoCompactMaxTokens ?? 12000}
-              onChange={(e) => handleAutoCompactMaxTokens(e.target.value)}
+\2              onChange={(e) => handleAutoCompactMaxTokens(e.target.value)}
               disabled={!preferences.autoCompactEnabled}
               className={cn(
                 "w-full p-2 text-sm border rounded-md",
@@ -265,8 +262,7 @@ const Settings: React.FC = () => {
               )}
             />
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              当前对话估算 token 达到该值时自动触发压缩（范围 2000~60000，默认 12000）
-            </p>
+\2            </p>
           </div>
         </CardContent>
       </Card>

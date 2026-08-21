@@ -114,6 +114,11 @@ export abstract class BaseAdapterPlugin implements AdapterPlugin {
     return false;
   }
 
+  /** 平台原生 token 数，默认不提供（返回 null 走估算兜底）。 */
+  async readNativeTokenCount(): Promise<number | null> {
+    return null;
+  }
+
   async getConversationMode(): Promise<string | null> {
     this.context.logger.warn('getConversationMode not implemented by this adapter.');
     return null;
