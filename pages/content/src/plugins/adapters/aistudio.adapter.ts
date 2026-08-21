@@ -371,8 +371,9 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     this.context.logger.debug(`Attempting to insert text into AI Studio chat input: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
 
     try {
-      // Use the proven chatInputHandler method
-      const success = insertTextToChatInput(text);
+      // Use the proven chatInputHandler method。
+      // 新建会话后 composer 可能仍处于渲染阶段，先轮询等待输入框出现再插入。
+      const success = await this.waitAndInsertText(text);
 
       if (success) {
         // Emit success event to the new event system
@@ -395,6 +396,37 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
       this.emitExecutionFailed('insertText', errorMessage);
       return false;
     }
+  }
+
+  /**
+   * 新建会话切换后，AI Studio 会有“保存会话”的加载过程：composer 可能尚未渲染，
+   * 或渲染后又被加载流程重置。因此：
+   *  - 最多等待 20s（新建页加载可能超过默认的短等待）；
+   *  - 写入后短暂稳定并校验文本确实保留，被清空则继续重插；
+   *  - 已持有文本时直接成功，避免重复追加。
+   */
+  private async waitAndInsertText(text: string, timeoutMs = 20_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    const probe = text.slice(-40); // 用末尾片段校验文本是否真正保留在输入框
+    while (Date.now() < deadline) {
+      const input = findChatInputElement();
+      if (input) {
+        if (input.value.includes(probe)) {
+          return true; // 已写入且仍在
+        }
+        if (insertTextToChatInput(text)) {
+          await this.sleep(800); // 避开加载过程的重置
+          const retained = findChatInputElement();
+          if (retained && retained.value.includes(probe)) {
+            return true;
+          }
+          this.context.logger.debug('AI Studio 插入文本被新建会话加载过程清空，等待重插');
+        }
+      }
+      await this.sleep(250);
+    }
+    this.context.logger.warn(`AI Studio 等待输入框就绪超时（${timeoutMs}ms）`);
+    return false;
   }
 
   /**
@@ -1814,11 +1846,15 @@ export const findChatInputElement = (): HTMLTextAreaElement | null => {
     return chatInput as HTMLTextAreaElement;
   }
 
-  // Final fallback: any textarea with .textarea class
-  chatInput = document.querySelector('textarea.textarea');
+  // Final fallback: any visible textarea (prefer the active composer one).
+  // 新建会话页 placeholder 可能滞后，用可见性过滤避免命中隐藏模板 textarea。
+  chatInput = Array.from(document.querySelectorAll('textarea.textarea')).find(el => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+  }) as HTMLTextAreaElement | null;
 
   if (chatInput) {
-    logger.debug('Found AiStudio input with generic textarea.textarea selector');
+    logger.debug('Found AiStudio input with visible textarea.textarea fallback');
     return chatInput as HTMLTextAreaElement;
   }
 
@@ -1858,11 +1894,23 @@ export const insertTextToChatInput = (text: string): boolean => {
       const currentText = chatInput.value;
       // Add new line before and after the current text if there's existing content
       const formattedText = currentText ? `${currentText}\n\n${text}` : text;
-      chatInput.value = formattedText;
 
-      // Trigger input event to make AiStudio recognize the change
-      const inputEvent = new Event('input', { bubbles: true });
-      chatInput.dispatchEvent(inputEvent);
+      // 用原生 setter 写入 value，绕过可能的 value tracker，确保 Angular 表单同步
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      if (valueSetter) {
+        valueSetter.call(chatInput, formattedText);
+      } else {
+        chatInput.value = formattedText;
+      }
+      chatInput.selectionStart = chatInput.selectionEnd = formattedText.length;
+
+      // 触发输入事件让 AI Studio（Angular）同步模型并启用 Run 按钮
+      try {
+        chatInput.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      } catch {
+        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      chatInput.dispatchEvent(new Event('change', { bubbles: true }));
 
       // Focus the textarea
       chatInput.focus();
@@ -2023,179 +2071,100 @@ export const submitChatInput = (maxWaitTime = 5000): Promise<boolean> => {
         return;
       }
 
-      // Define a function to find the submit button
-      const findSubmitButton = (): HTMLButtonElement | null => {
-        const submitButton =
-          document.querySelector('button[aria-label="Submit"]') ||
-          document.querySelector('button[aria-label="Send"]') ||
-          document.querySelector('button[type="submit"]') ||
-          // Look for a button next to the textarea
-          chatInput.parentElement?.querySelector('button') ||
-          // Common pattern: button with paper plane icon
-          document.querySelector('button svg[stroke="currentColor"]')?.closest('button');
-
-        return submitButton as HTMLButtonElement | null;
+      // AI Studio Run 按钮：空闲 type="submit"（Run），生成中 type="button" + "Stop"。
+      // 可用态由 aria-disabled 表达（false=可点）。点击 Run 即发送。
+      const findRunButton = (): HTMLButtonElement | null => {
+        return (
+          (document.querySelector('ms-run-button button') as HTMLButtonElement | null) ||
+          document.querySelector('button[jslog*="225921"]') ||
+          document.querySelector<HTMLButtonElement>('button[type="submit"]')
+        );
       };
 
-      // Try to find and check the submit button
-      const submitButton = findSubmitButton();
+      const isRunEnabled = (btn: HTMLButtonElement | null): boolean => {
+        if (!btn) return false;
+        if (btn.type === 'button') return false; // 生成中（Stop）
+        if (btn.disabled) return false;
+        if (btn.getAttribute('disabled') !== null) return false;
+        if (btn.getAttribute('aria-disabled') === 'true') return false;
+        if (btn.classList.contains('disabled')) return false;
+        return true;
+      };
 
-      if (submitButton) {
-        logger.debug(`Found submit button (${submitButton.getAttribute('aria-label') || 'unknown'})`);
-
-        // Function to check if button is enabled and click it
-        const tryClickingButton = () => {
-          const button = findSubmitButton();
-          if (!button) {
-            logger.debug('Submit button no longer found');
-            resolve(false);
-            return;
-          }
-
-          // Check if the button is disabled
-          const isDisabled =
-            button.disabled ||
-            button.getAttribute('disabled') !== null ||
-            button.getAttribute('aria-disabled') === 'true' ||
-            button.classList.contains('disabled');
-
-          if (!isDisabled) {
-            logger.debug('Submit button is enabled, clicking it');
-            button.click();
-            resolve(true);
-          } else {
-            logger.debug('Submit button is disabled, waiting...');
-          }
-        };
-
-        // Set up a timer to periodically check if the button becomes enabled
-        let elapsedTime = 0;
-        const checkInterval = 200; // Check every 200ms
-
-        const intervalId = setInterval(() => {
-          elapsedTime += checkInterval;
-
-          tryClickingButton();
-
-          // If we've waited too long, try alternative methods
-          if (elapsedTime >= maxWaitTime) {
-            clearInterval(intervalId);
-            logger.debug(`Button remained disabled for ${maxWaitTime}ms, trying alternative methods`);
-
-            // Method 2: Simulate Enter key press
-            logger.debug('Simulating Enter key press as fallback');
-
-            // Focus the textarea first
-            chatInput.focus();
-
-            // Create and dispatch keydown event (Enter key)
-            const keydownEvent = new KeyboardEvent('keydown', {
-              key: 'Enter',
-              code: 'Enter',
-              keyCode: 13,
-              which: 13,
-              bubbles: true,
-              cancelable: true,
-            });
-
-            // Create and dispatch keypress event
-            const keypressEvent = new KeyboardEvent('keypress', {
-              key: 'Enter',
-              code: 'Enter',
-              keyCode: 13,
-              which: 13,
-              bubbles: true,
-              cancelable: true,
-            });
-
-            // Create and dispatch keyup event
-            const keyupEvent = new KeyboardEvent('keyup', {
-              key: 'Enter',
-              code: 'Enter',
-              keyCode: 13,
-              which: 13,
-              bubbles: true,
-              cancelable: true,
-            });
-
-            // Dispatch all events in sequence
-            chatInput.dispatchEvent(keydownEvent);
-            chatInput.dispatchEvent(keypressEvent);
-            chatInput.dispatchEvent(keyupEvent);
-
-            // Try to find and submit a form as a last resort
-            const form = chatInput.closest('form');
-            if (form) {
-              logger.debug('Found form element, submitting it');
-              form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
-            }
-
-            logger.debug('Attempted all fallback methods to submit chat input');
-            resolve(true);
-          }
-        }, checkInterval);
-
-        // Initial check - maybe it's already enabled
-        tryClickingButton();
-
-        // If the button is already enabled and clicked, clear the interval
-        if (submitButton && !submitButton.disabled) {
-          clearInterval(intervalId);
-        }
-      } else {
-        // If no button found, proceed with alternative methods immediately
-        logger.debug('No submit button found, trying alternative methods');
-
-        // Method 2: Simulate Enter key press
-        logger.debug('Simulating Enter key press as fallback');
-
-        // Focus the textarea first
+      // AI Studio 提交快捷键为 ⌘/Ctrl+Enter（Run 按钮图标为 ⌘+Return）。
+      const pressSubmitShortcut = (): void => {
         chatInput.focus();
-
-        // Create and dispatch keydown event (Enter key)
-        const keydownEvent = new KeyboardEvent('keydown', {
+        const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
+        const base = {
           key: 'Enter',
           code: 'Enter',
           keyCode: 13,
           which: 13,
           bubbles: true,
           cancelable: true,
-        });
+          ctrlKey: !isMac,
+          metaKey: isMac,
+          altKey: false,
+          shiftKey: false
+        };
+        chatInput.dispatchEvent(new KeyboardEvent('keydown', base));
+        chatInput.dispatchEvent(new KeyboardEvent('keyup', base));
 
-        // Create and dispatch keypress event
-        const keypressEvent = new KeyboardEvent('keypress', {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true,
-        });
+        // 额外兜底：直接点击当前状态下的 Run 按钮
+        const run = findRunButton();
+        if (run) {
+          try {
+            run.click();
+          } catch {
+            /* ignore */
+          }
+        }
+      };
 
-        // Create and dispatch keyup event
-        const keyupEvent = new KeyboardEvent('keyup', {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true,
-        });
+      let settled = false;
+      const settle = (ok: boolean): void => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
 
-        // Dispatch all events in sequence
-        chatInput.dispatchEvent(keydownEvent);
-        chatInput.dispatchEvent(keypressEvent);
-        chatInput.dispatchEvent(keyupEvent);
+      const startedAt = Date.now();
+      const interval = setInterval(() => {
+        const run = findRunButton();
 
-        // Try to find and submit a form as a last resort
-        const form = chatInput.closest('form');
-        if (form) {
-          logger.debug('Found form element, submitting it');
-          form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+        // 等待期间用户/上游已自行发出，检测到生成态即视为已提交，避免卡死
+        if (run && run.type === 'button') {
+          clearInterval(interval);
+          logger.debug('AI Studio already generating a response, treat as submitted');
+          settle(true);
+          return;
         }
 
-        logger.debug('Attempted all methods to submit chat input');
-        resolve(true);
+        if (isRunEnabled(run)) {
+          clearInterval(interval);
+          run!.click();
+          logger.debug('AI Studio Run button enabled, clicked to submit');
+          settle(true);
+          return;
+        }
+
+        if (Date.now() - startedAt >= maxWaitTime) {
+          clearInterval(interval);
+          logger.debug(`AI Studio Run button stayed disabled for ${maxWaitTime}ms, using Ctrl/Cmd+Enter shortcut`);
+          pressSubmitShortcut();
+          settle(true);
+        }
+      }, 150);
+
+      // 首次立即检查
+      const run = findRunButton();
+      if (run && run.type === 'button') {
+        // 已在生成中，命中重试即可（间隔会随后判定）
+      } else if (isRunEnabled(run)) {
+        clearInterval(interval);
+        run!.click();
+        logger.debug('AI Studio Run button enabled immediately, clicked to submit');
+        settle(true);
       }
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
