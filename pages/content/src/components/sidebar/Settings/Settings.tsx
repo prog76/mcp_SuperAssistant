@@ -2,6 +2,7 @@ import React from 'react';
 import { useUserPreferences } from '@src/hooks';
 import { Card, CardContent } from '@src/components/ui/card';
 import { Typography } from '../ui';
+import Toggle from '../components/Toggle';
 import { AutomationService } from '@src/services/automation.service';
 import { cn } from '@src/lib/utils';
 import { createLogger } from '@extension/shared/lib/logger';
@@ -61,6 +62,17 @@ const Settings: React.FC = () => {
 
     // Update automation state on window
     AutomationService.getInstance().updateAutomationStateOnWindow().catch(console.error);
+  };
+
+  const handleAutoCompactToggle = (enabled: boolean) => {
+    updatePreferences({ autoCompactEnabled: enabled });
+  };
+
+  const handleAutoCompactMaxTokens = (value: string) => {
+    const parsed = parseInt(value, 10);
+    if (Number.isNaN(parsed)) return;
+    // 夹取 2000~60000，与输入范围保持一致
+    updatePreferences({ autoCompactMaxTokens: Math.min(60_000, Math.max(2_000, parsed)) });
   };
 
   // Load stored delays on component mount, set default to 2 seconds if not set
@@ -210,6 +222,51 @@ const Settings: React.FC = () => {
                 {versionInfo.buildTimestamp ? 'Compare build numbers to check for updates' : 'Build timestamp unavailable'}
               </p>
             </div>
+      {/* 上下文压缩 */}
+      <Card className="border-slate-200 dark:border-slate-700 dark:bg-slate-800">
+        <CardContent className="p-4 space-y-3">
+          <Typography variant="h4" className="text-slate-700 dark:text-slate-300">
+            上下文压缩
+          </Typography>
+
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-slate-700 dark:text-slate-300">自动压缩</span>
+            <Toggle
+              enabled={preferences.autoCompactEnabled ?? false}
+              onChange={handleAutoCompactToggle}
+            />
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            当前对话估算 token 达到阈值时自动触发压缩（需平台支持读取对话）
+          </p>
+
+          <div className="space-y-1">
+            <label
+              htmlFor="auto-compact-max-tokens"
+              className="block text-sm font-medium text-slate-700 dark:text-slate-300"
+            >
+              自动触发最大 Token 数
+            </label>
+            <input
+              id="auto-compact-max-tokens"
+              type="number"
+              min={2000}
+              max={60000}
+              step={1000}
+              value={preferences.autoCompactMaxTokens ?? 12000}
+              onChange={(e) => handleAutoCompactMaxTokens(e.target.value)}
+              disabled={!preferences.autoCompactEnabled}
+              className={cn(
+                "w-full p-2 text-sm border rounded-md",
+                "bg-white dark:bg-slate-900",
+                "border-slate-300 dark:border-slate-600",
+                "text-slate-900 dark:text-slate-100",
+                "disabled:opacity-50"
+              )}
+            />
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              当前对话估算 token 达到该值时自动触发压缩（范围 2000~60000，默认 12000）
+            </p>
           </div>
         </CardContent>
       </Card>

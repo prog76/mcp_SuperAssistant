@@ -6,6 +6,7 @@
  */
 import React, { useEffect, useState } from 'react';
 import { useCompactionStore } from '@src/stores/compaction.store';
+import { useTokenStore } from '@src/stores/token.store';
 import { compactionService } from '@src/services/compaction.service';
 import { useCurrentAdapter } from '@src/hooks/useAdapter';
 import { Card, CardContent } from '@src/components/ui/card';
@@ -149,6 +150,39 @@ const Compaction: React.FC = () => {
               </Typography>
             </div>
             <Icon name="file-text" size="sm" className="text-indigo-600 dark:text-indigo-400" />
+          </div>
+
+          <div className="flex items-center justify-between">
+            <Typography variant="caption" className="text-slate-500 dark:text-slate-400">
+              当前对话约 {currentTokens.toLocaleString()} tokens
+              {autoCompactMaxTokens > 0 ? ` / ${autoCompactMaxTokens.toLocaleString()}` : ''}
+            </Typography>
+            <span
+              className={cn(
+                'text-xs px-2 py-0.5 rounded-full whitespace-nowrap',
+                isOverThreshold
+                  ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                  : currentTokens > autoCompactMaxTokens * 0.8
+                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                    : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
+              )}>
+              {isOverThreshold ? '已达阈值' : currentTokens > autoCompactMaxTokens * 0.8 ? '接近阈值' : '正常'}
+            </span>
+          </div>
+
+          {/* token 消耗进度条 */}
+          <div className="h-1.5 w-full rounded-full overflow-hidden bg-slate-100 dark:bg-slate-700">
+            <div
+              className={cn(
+                'h-full transition-all duration-300',
+                isOverThreshold
+                  ? 'bg-red-500'
+                  : currentTokens > autoCompactMaxTokens * 0.8
+                    ? 'bg-amber-500'
+                    : 'bg-indigo-500',
+              )}
+              style={{ width: `${Math.min(100, (currentTokens / (autoCompactMaxTokens || 1)) * 100)}%` }}
+            />
           </div>
 
           <Button

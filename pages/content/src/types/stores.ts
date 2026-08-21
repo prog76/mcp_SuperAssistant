@@ -71,6 +71,9 @@ export interface UserPreferences {
   isMinimized: boolean;
   customInstructions: string;
   customInstructionsEnabled: boolean;
+  // 自动上下文压缩：估算 token 达到 autoCompactMaxTokens 时自动触发 compressionService.compact()
+  autoCompactEnabled: boolean;
+  autoCompactMaxTokens: number; // 默认 12000，允许 2000~60000
 }
 
 export interface Notification {

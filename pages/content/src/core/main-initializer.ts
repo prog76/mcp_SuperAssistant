@@ -19,6 +19,7 @@ import { globalErrorHandler, performanceMonitor, circuitBreaker, contextBridge }
 import { pluginRegistry, cleanupPluginSystem, createPluginContext } from '../plugins';
 import { initializeGlobalEventHandlers, cleanupGlobalEventHandlers } from '../events/event-handlers';
 import { logMessage } from '../utils/helpers';
+import { tokenWatcher } from '../services/token-watcher.service';
 import { createLogger } from '@extension/shared/lib/logger';
 import { initializeAnalyticsListeners, startPeriodicSessionTracking, stopPeriodicSessionTracking } from '../analytics-listener';
 
@@ -249,6 +250,14 @@ export async function applicationInit(): Promise<void> {
     await initializeApplicationState();
     performanceMonitor.mark('app-state-initialized');
 
+    // 启动实时 token 监视器（adapter 已在 app-state 阶段激活）
+    try {
+      tokenWatcher.start();
+    } catch (error) {
+      logger.error('Failed to start token watcher:', error);
+    }
+    performanceMonitor.mark('token-watcher-started');
+
     // Initialize analytics listeners
     initializeAnalyticsListeners();
     startPeriodicSessionTracking();
@@ -312,6 +321,14 @@ export async function applicationCleanup(): Promise<void> {
     // Stop analytics tracking and send final session summary
     stopPeriodicSessionTracking();
     logger.debug('Analytics tracking stopped.');
+
+    // Stop the token watcher polling
+    try {
+      tokenWatcher.stop();
+    } catch (error) {
+      logger.error('Error stopping token watcher:', error);
+    }
+    logger.debug('Token watcher stopped.');
 
     // Cleanup in reverse order of initialization
     await cleanupPluginSystem();
