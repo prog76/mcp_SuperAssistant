@@ -770,7 +770,7 @@ class PluginRegistry {
         version: '2.0.0',
         type: 'website-adapter',
         hostnames: ['chatgpt.com'],
-        capabilities: ['text-insertion', 'form-submission', 'file-attachment'],
+        capabilities: ['text-insertion', 'form-submission', 'file-attachment', 'conversation-read', 'conversation-create'],
         create: () => new ChatGPTAdapter(),
         config: {
           id: 'chatgpt-adapter',

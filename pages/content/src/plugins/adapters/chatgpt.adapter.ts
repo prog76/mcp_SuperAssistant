@@ -1,5 +1,5 @@
 import { BaseAdapterPlugin } from './base.adapter';
-import type { AdapterCapability, PluginContext } from '../plugin-types';
+import type { AdapterCapability, PluginContext, ConversationMessage, ResponsePayload } from '../plugin-types';
 import { createLogger } from '@extension/shared/lib/logger';
 
 /**
@@ -22,7 +22,9 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     'text-insertion',
     'form-submission',
     'file-attachment',
-    'dom-manipulation'
+    'dom-manipulation',
+    'conversation-read',
+    'conversation-create'
   ];
 
   // CSS selectors for ChatGPT's UI elements
@@ -44,7 +46,15 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     // Button insertion points (for MCP popover) - targeting leading area next to plus button
     BUTTON_INSERTION_CONTAINER: '[grid-area="leading"], .composer-leading-actions, [data-testid="composer-plus-btn"]',
     // Alternative insertion points
-    FALLBACK_INSERTION: '.composer-parent, .relative.flex.w-full.items-end, [data-testid="composer-trailing-actions"]'
+    FALLBACK_INSERTION: '.composer-parent, .relative.flex.w-full.items-end, [data-testid="composer-trailing-actions"]',
+    // 消息容器（实测：用户/助手消息均带 data-message-author-role）
+    MESSAGE_USER: '[data-message-author-role="user"]',
+    MESSAGE_ASSISTANT: '[data-message-author-role="assistant"]',
+    // 发送/停止是同一个 #composer-submit-button，空闲时 testid=send-button，
+    // 生成中切成 testid=stop-button（aria-label 亦随之切换）
+    STOP_BUTTON: 'button[data-testid="stop-button"], #composer-submit-button[data-testid="stop-button"]',
+    // 新建会话按钮（侧边栏菜单项）
+    NEW_CHAT_BUTTON: 'a[data-testid="create-new-chat-button"]'
   };
 
   // URL patterns for navigation tracking
@@ -1460,5 +1470,205 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     tools.forEach(tool => {
       this.context.stores.tool?.addDetectedTool?.(tool);
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Conversation capabilities (上下文压缩 / 会话读写)
+  // 选择器基于 chatgpt.com 实测（2026-08）：
+  //   - 消息容器 [data-message-author-role="user"|"assistant"]
+  //   - 发送/停止同一 #composer-submit-button，空闲 send-button / 生成中 stop-button
+  //   - 新建会话 a[data-testid="create-new-chat-button"]
+  // ---------------------------------------------------------------------
+
+  /**
+   * 读取整段会话（含普通用户消息与助手消息）。
+   * 用户消息可能是 ChatGPT 原生回传的 <function_result> 工具结果（role=user），
+   * 这里如实返回其文本；压缩服务的 token 预算会在摘要阶段约束体量。
+   */
+  async readConversation(): Promise<ConversationMessage[] | null> {
+    this.context.logger.debug('Reading ChatGPT conversation');
+
+    const userEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_USER));
+    const assistantEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_ASSISTANT));
+    if (userEls.length === 0 && assistantEls.length === 0) {
+      this.context.logger.warn('No conversation messages found on ChatGPT page');
+      return null;
+    }
+
+    const all = document.querySelectorAll<HTMLElement>(
+      `${this.selectors.MESSAGE_USER}, ${this.selectors.MESSAGE_ASSISTANT}`
+    );
+
+    const collected: Element[] = [];
+    const messages: ConversationMessage[] = [];
+    all.forEach(el => {
+      // 跳过嵌套重复节点
+      if (collected.some(anc => anc.contains(el))) return;
+      collected.push(el);
+      messages.push({
+        role: el.matches(this.selectors.MESSAGE_USER) ? 'user' : 'assistant',
+        content: this.extractConversationText(el),
+        timestamp: Date.now(),
+        messageId: el.getAttribute('data-message-id') || undefined
+      });
+    });
+
+    if (messages.length === 0) {
+      this.context.logger.warn('ChatGPT conversation parsed to zero messages');
+      return null;
+    }
+    this.context.logger.debug(`Read ${messages.length} messages from ChatGPT conversation`);
+    return messages;
+  }
+
+  /**
+   * 新建会话：优先点击侧边栏“新建聊天”菜单项（SPA 无刷新），
+   * 找不到时兜底派发 ⌘/Ctrl+Shift+O 快捷键（chatgpt.com 新会话快捷键）。
+   * 不做整页导航，避免 content script 中断压缩流程 promise 链。
+   */
+  async newConversation(): Promise<boolean> {
+    this.context.logger.debug('Attempting to start a new ChatGPT conversation');
+
+    const newChat = this.findNewChatButton();
+    if (newChat) {
+      newChat.click();
+      this.context.logger.debug('Clicked ChatGPT new chat button');
+      await this.sleep(800);
+      if (this.isFreshConversation()) return true;
+      this.context.logger.warn('New chat button click did not reset conversation, trying shortcut');
+    }
+
+    this.dispatchNewChatShortcut();
+    await this.sleep(800);
+    if (this.isFreshConversation()) return true;
+
+    this.context.logger.warn('Failed to start a new ChatGPT conversation');
+    return false;
+  }
+
+  /** 判断当前是否为新会话（消息区无用户消息即视为空）。 */
+  private isFreshConversation(): boolean {
+    try {
+      return document.querySelectorAll(this.selectors.MESSAGE_USER).length === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 查找“新建聊天”：优先 data-testid，再按文本（新聊天/New chat）兜底。 */
+  private findNewChatButton(): HTMLElement | null {
+    const byTestId = document.querySelector<HTMLElement>(this.selectors.NEW_CHAT_BUTTON);
+    if (byTestId) return byTestId;
+
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, a, [role="button"]'));
+    return (
+      candidates.find(el => {
+        const t = (el.textContent ?? '').trim();
+        return t === '新聊天' || t === 'New chat' || t.startsWith('新聊天') || t.startsWith('New chat');
+      }) ?? null
+    );
+  }
+
+  /** 派发 ⌘/Ctrl+Shift+O 新建会话快捷键。 */
+  private dispatchNewChatShortcut(): void {
+    try {
+      const input = document.querySelector<HTMLElement>(this.selectors.CHAT_INPUT.split(', ')[0].trim());
+      const target = input ?? document.body;
+      target.focus();
+      const isMac = /Mac/i.test(navigator.platform || '');
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'O',
+          code: 'KeyO',
+          keyCode: 79,
+          which: 79,
+          ctrlKey: !isMac,
+          metaKey: isMac,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    } catch (error) {
+      this.context.logger.warn('Failed to dispatch new-chat shortcut', error);
+    }
+  }
+
+  /** 读取最后一条助手回复（含文本与代码块）。 */
+  async readLastResponse(): Promise<ResponsePayload | null> {
+    this.context.logger.debug('Reading last ChatGPT assistant response');
+
+    const assistantEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_ASSISTANT));
+    if (assistantEls.length === 0) {
+      this.context.logger.warn('No ChatGPT assistant messages found');
+      return null;
+    }
+
+    const last = assistantEls[assistantEls.length - 1];
+    const text = this.extractConversationText(last);
+
+    const codeBlocks: { lang: string; code: string }[] = [];
+    last.querySelectorAll('pre').forEach(pre => {
+      const langEl = pre.querySelector('code[class*="language-"]');
+      const lang = langEl?.className.match(/language-(\w+)/)?.[1] ?? '';
+      const code = (pre.innerText || pre.textContent || '').trim();
+      codeBlocks.push({ lang, code });
+    });
+
+    return { text, codeBlocks, rawHtml: last.innerHTML };
+  }
+
+  /**
+   * 等待模型回复完成。
+   * 判定：先生成中（存在 stop-button），随后 stop-button 消失（切回 send-button）
+   * 且消息区 2s 无新增变更，两条件取二，避免在静止页面误判。
+   */
+  async waitForResponse(timeoutMs: number = 60_000): Promise<boolean> {
+    this.context.logger.debug(`Waiting for ChatGPT response (timeout ${timeoutMs}ms)`);
+
+    const messageArea = document.querySelector('main') ?? document.body;
+    let lastMutation = Date.now();
+    const observer = new MutationObserver(() => {
+      lastMutation = Date.now();
+    });
+    observer.observe(messageArea, { childList: true, subtree: true, characterData: true });
+
+    let sawGeneration = false;
+    const check = (): boolean => {
+      const generating = !!document.querySelector(this.selectors.STOP_BUTTON);
+      if (generating) sawGeneration = true;
+      const stopGone = !generating;
+      const idleFor = Date.now() - lastMutation;
+      const conditions = [stopGone, idleFor > 2_000].filter(Boolean).length;
+      return sawGeneration && conditions >= 2;
+    };
+
+    const start = Date.now();
+    try {
+      while (Date.now() - start < timeoutMs) {
+        if (check()) {
+          this.context.logger.debug('ChatGPT response finished');
+          return true;
+        }
+        await this.sleep(400);
+      }
+      this.context.logger.warn(`Timed out waiting for ChatGPT response after ${timeoutMs}ms`);
+      return false;
+    } finally {
+      observer.disconnect();
+    }
+  }
+
+  /** 从消息节点提取纯文本（innerText，兼顾代码块换行）。 */
+  private extractConversationText(element: HTMLElement): string {
+    try {
+      return (element.innerText || element.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+    } catch {
+      return (element.textContent || '').trim();
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
