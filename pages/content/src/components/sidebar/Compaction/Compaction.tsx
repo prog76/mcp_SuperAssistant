@@ -154,7 +154,7 @@ const Compaction: React.FC = () => {
 
           <div className="flex items-center justify-between">
             <Typography variant="caption" className="text-slate-500 dark:text-slate-400">
-              当前对话约 {currentTokens.toLocaleString()} tokens
+              当前对话约 {(currentTokens ?? 0).toLocaleString()} tokens
               {autoCompactMaxTokens > 0 ? ` / ${autoCompactMaxTokens.toLocaleString()}` : ''}
             </Typography>
             <span

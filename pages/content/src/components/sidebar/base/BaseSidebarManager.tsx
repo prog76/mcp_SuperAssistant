@@ -384,7 +384,7 @@ export abstract class BaseSidebarManager {
         this.shadowHost.style.position = 'fixed';
         this.shadowHost.style.top = '0';
         this.shadowHost.style.right = '0';
-        this.shadowHost.style.zIndex = '9999';
+        this.shadowHost.style.zIndex = '2147483000';
         this.shadowHost.style.height = '100vh';
         this.shadowHost.style.pointerEvents = 'none'; // Allow clicks 'through' the host
         this.shadowHost.style.display = 'none'; // Initialize as hidden
@@ -478,6 +478,10 @@ export abstract class BaseSidebarManager {
 
     // Now safe to set visible and render with enhanced animations
     if (this.shadowHost) {
+      // 始终把 shadow host 追加到 body 末尾，保证与 AI Studio 右侧面板
+      // 同等 z-index 时本侧边栏 DOM 靠后、绘制在上层
+      document.body.appendChild(this.shadowHost);
+
       // Start with immediate visibility but with opacity 0 for smooth transition
       this.shadowHost.style.display = 'block';
       this.shadowHost.style.opacity = '0';
