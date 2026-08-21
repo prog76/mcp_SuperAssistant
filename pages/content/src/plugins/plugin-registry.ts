@@ -858,7 +858,7 @@ class PluginRegistry {
         version: '2.0.0',
         type: 'website-adapter',
         hostnames: ['aistudio.google.com'],
-        capabilities: ['text-insertion', 'form-submission', 'file-attachment'],
+        capabilities: ['text-insertion', 'form-submission', 'file-attachment', 'conversation-read', 'conversation-create'],
         create: () => new AIStudioAdapter(),
         config: {
           id: 'aistudio-adapter',

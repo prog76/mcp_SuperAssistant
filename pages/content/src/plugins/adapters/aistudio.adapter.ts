@@ -1,5 +1,5 @@
 import { BaseAdapterPlugin } from './base.adapter';
-import type { AdapterCapability, PluginContext } from '../plugin-types';
+import type { AdapterCapability, PluginContext, ConversationMessage, ResponsePayload } from '../plugin-types';
 // import { 
 //   findChatInputElement, 
 //   insertTextToChatInput, 
@@ -28,7 +28,9 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     'text-insertion',
     'form-submission',
     'file-attachment',
-    'dom-manipulation'
+    'dom-manipulation',
+    'conversation-read',
+    'conversation-create'
   ];
 
   // CSS selectors for AI Studio's UI elements (Updated Jan 2026)
@@ -39,7 +41,20 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     // Button insertion points (for MCP popover) - looking for buttons-row and button-wrapper
     BUTTON_INSERTION_CONTAINER: '.buttons-row .button-wrapper, .buttons-row, .prompt-box-container .buttons-row, .prompt-input-wrapper, .actions-container',
     // Alternative insertion points
-    FALLBACK_INSERTION: '.prompt-box-container, .input-area, .chat-input-container, .conversation-input'
+    FALLBACK_INSERTION: '.prompt-box-container, .input-area, .chat-input-container, .conversation-input',
+    // 会话轮容器（实测）：User/Model 回合各自带 data-turn-role；内容在 .turn-content
+    TURN: '[data-turn-role]',
+    TURN_USER: '[data-turn-role="User"]',
+    TURN_MODEL: '[data-turn-role="Model"]',
+    // 思维链（模型"思考过程"）在 mat-expansion-panel 内，压缩读取时必须排除
+    THINKING_PANEL: '.mat-expansion-panel',
+    // 原生累计 token 数（如 "4,994 tokens"）
+    TOKEN_COUNT: '.v3-token-count-value',
+    // Run/停止是同一个 ms-run-button button：
+    //   空闲 type="submit"（Run），生成中 type="button" + .spin + "Stop"
+    RUN_BUTTON: 'ms-run-button button',
+    // 新建会话
+    NEW_CHAT_BUTTON: 'button[aria-label="New chat"]'
   };
 
   // URL patterns for navigation tracking
@@ -1511,6 +1526,181 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     tools.forEach(tool => {
       this.context.stores.tool?.addDetectedTool?.(tool);
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Conversation capabilities (上下文压缩 / 会话读写)
+  // 选择器基于 aistudio.google.com 实测（2026-08）：
+  //   - 回合容器 [data-turn-role="User"|"Model"]，内容在 .turn-content
+  //   - 模型思维链在 .mat-expansion-panel 内（读取时排除）
+  //   - Run/停止同一 ms-run-button button：空闲 type="submit"、生成中 type="button" + .spin
+  //   - 原生累计 token：.v3-token-count-value
+  //   - 新建会话：button[aria-label="New chat"]
+  // ---------------------------------------------------------------------
+
+  /** AI Studio 原生累计 token 数（免前端估算）。读不到返回 null 由估算兜底。 */
+  async readNativeTokenCount(): Promise<number | null> {
+    try {
+      const el = document.querySelector(this.selectors.TOKEN_COUNT);
+      const raw = el?.textContent?.trim() ?? '';
+      const m = raw.match(/([\d,]+)\s*tokens?/i);
+      if (!m) return null;
+      const n = parseInt(m[1].replace(/,/g, ''), 10);
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 读取整段会话（用户 + 模型回合），排除思维链面板。
+   * 文本取自 .turn-content；长对话若 AI Studio 虚拟滚动，只读当前已渲染回合
+   * （实时监视用；压缩服务可另做滚动采集）。
+   */
+  async readConversation(): Promise<ConversationMessage[] | null> {
+    this.context.logger.debug('Reading AI Studio conversation');
+
+    const turns = Array.from(
+      document.querySelectorAll<HTMLElement>(this.selectors.TURN)
+    ).filter(turn => !this.isInsideThinking(turn));
+
+    const messages: ConversationMessage[] = [];
+    for (const turn of turns) {
+      const role = (turn.getAttribute('data-turn-role') || '').toLowerCase();
+      if (role !== 'user' && role !== 'model') continue;
+      const text = this.extractTurnText(turn);
+      if (!text) continue;
+      messages.push({
+        role: role === 'user' ? 'user' : 'assistant',
+        content: text,
+        timestamp: Date.now()
+      });
+    }
+
+    if (messages.length === 0) {
+      this.context.logger.warn('AI Studio conversation parsed to zero messages');
+      return null;
+    }
+    this.context.logger.debug(`Read ${messages.length} messages from AI Studio conversation`);
+    return messages;
+  }
+
+  /** 新建会话：点击 New chat 按钮（SPA 无刷新），校验会话已重置。 */
+  async newConversation(): Promise<boolean> {
+    this.context.logger.debug('Attempting to start a new AI Studio conversation');
+
+    const btn = document.querySelector<HTMLButtonElement>(this.selectors.NEW_CHAT_BUTTON);
+    if (btn) {
+      btn.click();
+      await this.sleep(1000);
+      if (this.isFreshConversation()) return true;
+      this.context.logger.warn('New chat button click did not reset conversation');
+    }
+    return false;
+  }
+
+  private isFreshConversation(): boolean {
+    try {
+      return document.querySelectorAll(this.selectors.TURN_USER).length === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 读取最后一条模型回复（含文本与代码块）。 */
+  async readLastResponse(): Promise<ResponsePayload | null> {
+    this.context.logger.debug('Reading last AI Studio model response');
+
+    const models = Array.from(
+      document.querySelectorAll<HTMLElement>(this.selectors.TURN_MODEL)
+    ).filter(turn => !this.isInsideThinking(turn));
+    if (models.length === 0) {
+      this.context.logger.warn('No AI Studio model turns found');
+      return null;
+    }
+
+    const last = models[models.length - 1];
+    const text = this.extractTurnText(last);
+
+    const codeBlocks: { lang: string; code: string }[] = [];
+    last.querySelectorAll('ms-code-block').forEach(block => {
+      const lang = block.getAttribute('data-test-language') ?? '';
+      const code = block.querySelector('pre code')?.textContent?.trim() ?? '';
+      codeBlocks.push({ lang, code });
+    });
+
+    return { text, codeBlocks, rawHtml: last.innerHTML };
+  }
+
+  /**
+   * 等待模型生成完成。
+   * 判定：ms-run-button 内 button 由 type="submit"（Run）在生成时切成
+   * type="button" + .spin + "Stop"，切回 submit 且安全区 2s 无变更即完成。
+   */
+  async waitForResponse(timeoutMs: number = 60_000): Promise<boolean> {
+    this.context.logger.debug(`Waiting for AI Studio response (timeout ${timeoutMs}ms)`);
+
+    const messageArea = document.querySelector('main') ?? document.body;
+    let lastMutation = Date.now();
+    const observer = new MutationObserver(() => {
+      lastMutation = Date.now();
+    });
+    observer.observe(messageArea, { childList: true, subtree: true, characterData: true });
+
+    let sawGeneration = false;
+    const check = (): boolean => {
+      const generating = this.isGenerating();
+      if (generating) sawGeneration = true;
+      const stopGone = !generating;
+      const idleFor = Date.now() - lastMutation;
+      const conditions = [stopGone, idleFor > 2_000].filter(Boolean).length;
+      return sawGeneration && conditions >= 2;
+    };
+
+    const start = Date.now();
+    try {
+      while (Date.now() - start < timeoutMs) {
+        if (check()) {
+          this.context.logger.debug('AI Studio response finished');
+          return true;
+        }
+        await this.sleep(400);
+      }
+      this.context.logger.warn(`Timed out waiting for AI Studio response after ${timeoutMs}ms`);
+      return false;
+    } finally {
+      observer.disconnect();
+    }
+  }
+
+  /** 是否处于"生成中"：Run 按钮被切成 type="button" 且带 Stop/进度图标。 */
+  private isGenerating(): boolean {
+    const btn = document.querySelector<HTMLButtonElement>(this.selectors.RUN_BUTTON);
+    if (!btn) return false;
+    if (btn.type === 'button') {
+      return !!btn.querySelector('.spin') || /stop/i.test(btn.textContent || '');
+    }
+    return false;
+  }
+
+  private isInsideThinking(el: Element): boolean {
+    return !!el.closest(this.selectors.THINKING_PANEL);
+  }
+
+  /** 提取回合容器纯文本：克隆后移除思维链面板，再取 innerText（含代码块换行）。 */
+  private extractTurnText(turn: HTMLElement): string {
+    try {
+      const clone = turn.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll(this.selectors.THINKING_PANEL).forEach(n => n.remove());
+      const text = (clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+      return text;
+    } catch {
+      return (turn.textContent || '').trim();
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
