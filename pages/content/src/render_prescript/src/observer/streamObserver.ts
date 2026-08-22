@@ -276,7 +276,9 @@ const processChunkImmediate = (
   if (!chunkInfo.hasNewChunk || !chunkInfo.isSignificant) return;
 
   // Find target element immediately
-  const target = document.querySelector(`div[data-block-id="${blockId}"]`) as HTMLElement;
+  // 原实现硬编码 div[data-block-id]，但目标元素可能是 <p>（ChatGPT）等；
+  // 用 monitorNode 写入的 data-monitored-node 精确定位原始元素。
+  const target = document.querySelector(`[data-monitored-node="${blockId}"]`) as HTMLElement;
   if (!target) return;
 
   // Skip if already processing or complete
@@ -618,11 +620,19 @@ export const monitorNode = (node: HTMLElement, blockId: string): void => {
         abruptlyEndedStreams.delete(blockId);
       }
 
-      // Find the nearest element that contains our monitored node
+      // Find the nearest element that matches a target selector. targetSelectors 里可能是
+      // 纯标签（'pre'/'code'），也可能是复杂 CSS 选择器（如 '[data-message-author-role="assistant"] p'），
+      // 必须用 el.matches() 判断，不能用 tagName 精确匹配（tagName 只对纯标签有效）。
       let target = node;
-      while (target && !CONFIG.targetSelectors.includes(target.tagName.toLowerCase())) {
+      while (target) {
+        if (CONFIG.targetSelectors.some(sel => {
+          try {
+            return target.matches(sel);
+          } catch {
+            return false; // 非法/部分选择器
+          }
+        })) break;
         target = target.parentElement as HTMLElement;
-        if (!target) break;
       }
 
       if (target) {
@@ -764,8 +774,10 @@ export const resyncWithOriginalContent = (blockId: string): void => {
   // Mark as resyncing to prevent conflicting updates
   resyncingBlocks.add(blockId);
 
-  // Find the original pre element
-  const originalPre = document.querySelector(`div[data-block-id="${blockId}"]`);
+  // Find the original element containing raw content
+  // 用 data-monitored-node 精确定位原始元素，避免硬编码 div[data-block-id]
+  // 把渲染后的 .function-block（div）误当成原始内容节点（ChatGPT 上是 <p>）。
+  const originalPre = document.querySelector(`[data-monitored-node="${blockId}"]`);
   if (!originalPre || !originalPre.textContent) {
     if (CONFIG.debug) {
       logger.debug(`Original pre element not found for block ${blockId}`);

@@ -1250,6 +1250,31 @@ export const renderFunctionCall = (block: HTMLPreElement, isProcessingRef: { cur
 
   if (!existingDiv) {
     isNewRender = true;
+
+    // 按 call_id 跨元素去重（仅对新副本）。ChatGPT 会把同一个工具调用渲染成
+    // 多个 DOM 副本（真实 markdown <pre> / 隐藏 pre.overflow-visible / CodeMirror
+    // cm-scroller），若某 call_id 已有可见函数块，则本副本直接跳过，避免重复块。
+    // 只需处理 isNewRender（新元素首次渲染）；同一元素的 complete 更新走 else 分支，
+    // 不会被误判为重复。
+    const rawTextForCall = block.textContent?.trim() || '';
+    const callIdMatch = rawTextForCall.match(/"call_id"\s*:\s*(\d+)/) || rawTextForCall.match(/call_id="([^"]+)"/);
+    const thisCallId = callIdMatch ? callIdMatch[1] : null;
+    if (thisCallId) {
+      let dupFound = false;
+      document.querySelectorAll('.function-block:not(.function-result-container)').forEach(b => {
+        const cidEl = b.querySelector('.call-id');
+        if (cidEl && cidEl.textContent === String(thisCallId) && b.offsetParent !== null) {
+          dupFound = true;
+        }
+      });
+      if (dupFound) {
+        if (CONFIG.debug) logger.debug(`[Render] Skip duplicate call_id=${thisCallId} across DOM copies`);
+        processedElements.add(block);
+        block.setAttribute('data-block-id', blockId);
+        return false;
+      }
+    }
+
     if (!processedElements.has(block)) {
       processedElements.add(block);
       block.setAttribute('data-block-id', blockId);

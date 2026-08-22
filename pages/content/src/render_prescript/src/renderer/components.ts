@@ -692,11 +692,16 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
   // Cache DOM references for performance
   const buttonText = executeButton.querySelector('span')!;
 
+  // 工具调用超时上限：即使 mcpClient 挂起，也强制把按钮复位为可见可点，
+  // 避免 autoExecute 模式下 Run 按钮长时间处于 disabled+spinner 的“不可见”态。
+  const EXECUTE_TIMEOUT_MS = 30000;
+
   // Optimized click handler with better performance and mcpClient integration
   executeButton.onclick = async () => {
-    // Batch button state changes
+    // 进入执行态：保留 “Run” 文案（不隐藏），仅用 spinner 表示进行中，
+    // 这样即使工具执行慢，按钮也始终可见，用户可感知当前状态。
     executeButton.disabled = true;
-    buttonText.style.display = 'none';
+    buttonText.textContent = 'Running...';
 
     // Add spinner efficiently
     const spinner = createOptimizedElement('span', {
@@ -717,7 +722,7 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
     // Function to reset button state
     const resetButtonState = () => {
       executeButton.disabled = false;
-      buttonText.style.display = '';
+      buttonText.textContent = 'Run';
 
       if (executeButton.contains(spinner)) {
         executeButton.removeChild(spinner);
@@ -753,7 +758,12 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
 
       // Call tool using the new mcpClient async API
       try {
-        const result = await mcpClient.callTool(functionName, parameters);
+        const caller = mcpClient.callTool(functionName, parameters);
+        // 有界超时：callTool 挂起时强制恢复按钮，避免永久不可见
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Request timed out. Please try again.')), EXECUTE_TIMEOUT_MS),
+        );
+        const result = await Promise.race([caller, timeoutPromise]);
 
         resetButtonState();
         displayResult(resultsPanel, loadingIndicator, true, result);
