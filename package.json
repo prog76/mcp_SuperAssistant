@@ -28,6 +28,9 @@
     "zip:firefox": "pnpm build:firefox && pnpm -F zipper zip",
     "e2e": "pnpm zip && turbo e2e",
     "e2e:firefox": "pnpm zip:firefox && turbo e2e",
+    "e2e:browser": "node e2e/launch.cjs",
+    "e2e:capture": "node e2e/capture.cjs",
+    "e2e:cookies": "node e2e/cookies/toStorageState.cjs",
     "lint": "turbo lint --continue -- --fix --cache --cache-location node_modules/.cache/.eslintcache",
     "lint:fix": "turbo lint:fix --continue -- --fix --cache --cache-location node_modules/.cache/.eslintcache",
     "prettier": "turbo prettier --continue -- --cache --cache-location node_modules/.cache/.prettiercache",
@@ -40,14 +43,15 @@
     "scan:unsafe-eval": "node scripts/scan-unsafe-eval.mjs dist"
   },
   "dependencies": {
+    "firebase": "^11.9.1",
     "react": "19.1.0",
-    "react-dom": "19.0.0",
-    "firebase": "^11.9.1"
+    "react-dom": "19.0.0"
   },
   "devDependencies": {
     "@eslint/compat": "^1.2.5",
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.20.0",
+    "@playwright/test": "^1.62.1",
     "@types/chrome": "0.0.304",
     "@types/eslint-plugin-jsx-a11y": "^6.10.0",
     "@types/eslint__eslintrc": "^2.1.2",

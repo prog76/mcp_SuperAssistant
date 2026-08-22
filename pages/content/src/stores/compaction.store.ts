@@ -16,11 +16,14 @@ import {
 
 const logger = createLogger('useCompactionStore');
 
+const AUTO_SEND_KEY = 'mcp_compact_autosend'; // 压缩后是否自动发送到新会话
+
 export interface CompactionState {
   records: CompactionRecord[];
   activeCompactionId: string | null;
   isCompacting: boolean;
   lastError: string | null;
+  autoSend: boolean; // 压缩完成后自动发送到新会话（走两步的第二步）
 
   loadRecords: () => Promise<void>;
   addRecord: (record: CompactionRecord) => Promise<void>;
@@ -31,6 +34,8 @@ export interface CompactionState {
   setError: (error: string | null) => void;
   getTranscript: (id: string) => Promise<string | null>;
   getSummary: (id: string) => Promise<string | null>;
+  loadAutoSend: () => Promise<void>;
+  setAutoSend: (value: boolean) => void;
 }
 
 export const useCompactionStore = create<CompactionState>()(
@@ -40,6 +45,7 @@ export const useCompactionStore = create<CompactionState>()(
       activeCompactionId: null,
       isCompacting: false,
       lastError: null,
+      autoSend: false,
 
       loadRecords: async () => {
         const records = await listCompactionRecords();
@@ -80,6 +86,22 @@ export const useCompactionStore = create<CompactionState>()(
       getSummary: async (id) => {
         const record = get().records.find(r => r.compactionId === id);
         return record ? loadArchive(record.summaryPath) : null;
+      },
+
+      loadAutoSend: async () => {
+        try {
+          const res = await chrome.storage.local.get(AUTO_SEND_KEY);
+          set({ autoSend: res?.[AUTO_SEND_KEY] === true });
+        } catch (error) {
+          logger.error('[CompactionStore] loadAutoSend failed:', error);
+        }
+      },
+
+      setAutoSend: (value) => {
+        chrome.storage.local.set({ [AUTO_SEND_KEY]: value }).catch(error => {
+          logger.error('[CompactionStore] persist autoSend failed:', error);
+        });
+        set({ autoSend: value });
       },
     }),
   ),

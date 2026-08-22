@@ -62,6 +62,8 @@ export class CompactionService {
     return CompactionService.instance;
   }
 
+  private isSending = false; // 「发送到新会话」进行中标志（并发保护）
+
   /**
    * 执行一次上下文压缩。已在压缩中时拒绝并发。
    */
@@ -96,10 +98,6 @@ export class CompactionService {
     };
 
     try {
-      // 捕获旧会话模式与系统提示词（新会话需保持模式一致、并携带系统提示词）
-      const conversationMode = await adapter.getConversationMode();
-      const systemInstructions = instructionsState.instructions.trim();
-
       // 1. 导出全文
       const transcriptMessages = await adapter.readConversation();
       if (!transcriptMessages || transcriptMessages.length === 0) {
@@ -149,71 +147,20 @@ export class CompactionService {
 
       // 7. 存档 summary
       await saveArchive(record.summaryPath, summary);
+      record.status = 'done';
+      await store().updateRecord(compactionId, { status: 'done', summaryTokens: record.summaryTokens });
 
-      // 8. 开新会话并注入续接消息
-      const continuation = this.buildContinuationMessage(
-        summary,
-        options.carriedTodos ?? [],
-        compactionId,
-        systemInstructions || undefined,
-      );
-      const newChat = await adapter.newConversation();
-
-      if (!newChat) {
-        // newConversation 失败：剪贴板兜底
-        await this.copyToClipboard(continuation);
-        await this.finish(compactionId, {
-          success: true,
-          compactionId,
-          summaryTokens: record.summaryTokens,
-          continuationMessage: continuation,
-          error: '已生成摘要并复制到剪贴板，请手动新建会话后粘贴续接消息',
-        });
-        return {
-          success: true,
-          compactionId,
-          summaryTokens: record.summaryTokens,
-          continuationMessage: continuation,
-          error: '已生成摘要并复制到剪贴板，请手动新建会话后粘贴续接消息',
-        };
+      // 自动发送：若开启「压缩后自动发送到新会话」，则直接进入第二步发送
+      const autoSend = options.autoSend ?? store().autoSend;
+      if (autoSend) {
+        const sent = await this.sendContinuation(compactionId);
+        if (!sent.success) {
+          logger.warn('[Compaction] 自动发送续接消息失败（摘要已存档，可手动发送）:', sent.error);
+        }
+        return sent;
       }
 
-      // 9. 注入续接消息（带重试；失败剪贴板兜底）
-      await this.sleep(800); // 等待 SPA 切换后输入框就绪
-
-      // 恢复旧会话模式（快速/专家/识图），确保新会话保持一致
-      if (conversationMode) {
-        await adapter.setConversationMode(conversationMode);
-        await this.sleep(400);
-      }
-
-      const inserted = await this.insertWithRetry(adapter, continuation);
-      if (!inserted) {
-        await this.copyToClipboard(continuation);
-        await this.finish(compactionId, {
-          success: true,
-          compactionId,
-          summaryTokens: record.summaryTokens,
-          continuationMessage: continuation,
-          error: '续接消息已复制到剪贴板，请手动粘贴发送',
-        });
-        return {
-          success: true,
-          compactionId,
-          summaryTokens: record.summaryTokens,
-          continuationMessage: continuation,
-          error: '续接消息已复制到剪贴板，请手动粘贴发送',
-        };
-      }
-
-      // 10. 提交
-      await adapter.submitForm();
-
-      await this.finish(compactionId, {
-        success: true,
-        compactionId,
-        summaryTokens: record.summaryTokens,
-      });
+      logger.debug(`[Compaction] 压缩完成（摘要已存档待发送）: ${compactionId}`);
       return { success: true, compactionId, summaryTokens: record.summaryTokens };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -222,6 +169,66 @@ export class CompactionService {
       return { success: false, reason: 'failed', error: message, compactionId };
     } finally {
       store().setCompacting(false);
+    }
+  }
+
+  /**
+   * 第二步：把已生成并存档的摘要发送到新会话（侧边栏「发送到新会话」触发）。
+   * 新建会话可能需要等待 AI Studio 保存流程完成，故等待时长由 newConversation 内部控制。
+   */
+  public async sendContinuation(compactionId: string): Promise<CompactResult> {
+    const store = () => useCompactionStore.getState();
+    if (this.isSending) {
+      return { success: false, reason: 'failed', error: '已有续接发送进行中' };
+    }
+    const record = store().records.find(r => r.compactionId === compactionId);
+    if (!record) {
+      return { success: false, reason: 'failed', error: '未找到该压缩记录' };
+    }
+    const summary = await store().getSummary(compactionId);
+    if (!summary) {
+      return { success: false, reason: 'failed', error: '未找到摘要存档，无法发送' };
+    }
+    const adapter = this.getActiveAdapter();
+    if (!adapter) {
+      return { success: false, reason: 'no_adapter', error: '未找到可用的平台适配器' };
+    }
+
+    this.isSending = true;
+    try {
+      const systemInstructions = instructionsState.instructions.trim();
+      const continuation = this.buildContinuationMessage(
+        summary,
+        record.carriedTodos,
+        compactionId,
+        systemInstructions || undefined,
+      );
+
+      const newChat = await adapter.newConversation();
+      if (!newChat) {
+        await this.copyToClipboard(continuation);
+        await store().updateRecord(compactionId, { status: 'failed' });
+        return { success: false, reason: 'failed', error: '新建会话失败，续接消息已复制到剪贴板，请手动粘贴发送' };
+      }
+
+      await this.sleep(800); // 等待 SPA 切换后输入框就绪
+      const inserted = await this.insertWithRetry(adapter, continuation);
+      if (!inserted) {
+        await this.copyToClipboard(continuation);
+        await store().updateRecord(compactionId, { status: 'failed' });
+        return { success: false, reason: 'failed', error: '续接消息已复制到剪贴板，请手动粘贴发送' };
+      }
+
+      await adapter.submitForm();
+      await store().updateRecord(compactionId, { status: 'sent', summaryTokens: record.summaryTokens });
+      logger.debug(`[Compaction] 续接消息已发送到新会话: ${compactionId}`);
+      return { success: true, compactionId, summaryTokens: record.summaryTokens };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error('[Compaction] 发送续接消息异常:', error);
+      return { success: false, reason: 'failed', error: message, compactionId };
+    } finally {
+      this.isSending = false;
     }
   }
 

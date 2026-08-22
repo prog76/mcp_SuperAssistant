@@ -24,7 +24,7 @@ export interface CompactionRecord {
   tokenEstimate: TokenEstimate; // 压缩前对话的 token 估算
   summaryTokens: number; // 摘要 token 估算
   carriedTodos: string[]; // 未完成 todo id
-  status: 'pending' | 'summarizing' | 'done' | 'failed';
+  status: 'pending' | 'summarizing' | 'done' | 'failed' | 'sent'; // done=摘要已生成待发送；sent=已发送到新会话
 }
 
 /* ------------------------------------------------------------------ */

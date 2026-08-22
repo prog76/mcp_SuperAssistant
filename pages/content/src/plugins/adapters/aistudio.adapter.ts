@@ -1585,17 +1585,30 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     return messages;
   }
 
-  /** 新建会话：点击 New chat 按钮（SPA 无刷新），校验会话已重置。 */
+  /** 新建会话：点击 New chat 按钮（SPA 无刷新）。 */
   async newConversation(): Promise<boolean> {
     this.context.logger.debug('Attempting to start a new AI Studio conversation');
 
     const btn = document.querySelector<HTMLButtonElement>(this.selectors.NEW_CHAT_BUTTON);
-    if (btn) {
-      btn.click();
-      await this.sleep(1000);
-      if (this.isFreshConversation()) return true;
-      this.context.logger.warn('New chat button click did not reset conversation');
+    if (!btn) {
+      this.context.logger.warn('New chat button not found');
+      return false;
     }
+    btn.click();
+
+    // 长对话/刚生成完摘要时，New chat 会触发"保存对话"流程，时长随上下文线性增长
+    // （实测可达 1-2 分钟以上）。因此轮询等待要足够久，并处理可能的确认弹窗。
+    const deadline = Date.now() + 180_000;
+    let dialogHandled = false;
+    while (Date.now() < deadline) {
+      if (this.isFreshConversation()) return true;
+      // 若出现新建/保存确认弹窗，自动接受（首次命中即可，避免重复点叠加弹窗）
+      if (!dialogHandled) {
+        dialogHandled = this.acceptNewChatConfirmDialog();
+      }
+      await this.sleep(400);
+    }
+    this.context.logger.warn('New chat button click did not reset conversation within 180s');
     return false;
   }
 
@@ -1605,6 +1618,26 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 新建长对话时 AI Studio 可能弹出"保存/放弃当前会话"类确认；命中即点击确认。
+   * 用(新建/重新开始/discard/放弃)等语义关键词规避误点到 toaster/错误弹窗。
+   */
+  private acceptNewChatConfirmDialog(): boolean {
+    const dialog = document.querySelector(
+      '[role="dialog"], .mat-mdc-dialog-container, .cdk-overlay-container mat-dialog-container',
+    );
+    if (!dialog) return false;
+    const hint = (el: Element): string =>
+      `${el.textContent || ''} ${el.getAttribute('aria-label') || ''} ${el.className || ''}`;
+    const btn = Array.from(dialog.querySelectorAll<HTMLElement>('button')).find(b =>
+      /new.?chat|new.?session|新建|重新开始|discard|放弃|不要保存/i.test(hint(b)),
+    );
+    if (!btn) return false;
+    btn.click();
+    this.context.logger.debug('Accepted new-chat confirmation dialog');
+    return true;
   }
 
   /** 读取最后一条模型回复（含文本与代码块）。 */
@@ -1640,37 +1673,35 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
   async waitForResponse(timeoutMs: number = 60_000): Promise<boolean> {
     this.context.logger.debug(`Waiting for AI Studio response (timeout ${timeoutMs}ms)`);
 
-    const messageArea = document.querySelector('main') ?? document.body;
-    let lastMutation = Date.now();
-    const observer = new MutationObserver(() => {
-      lastMutation = Date.now();
-    });
-    observer.observe(messageArea, { childList: true, subtree: true, characterData: true });
+    // 不再依赖"main 内 2s 无 DOM 变更"(AI Studio 持续更新导致永不满足而超时)。
+    // 改用 Run 按钮状态机：观察到"生成中(Stop)"→ 回到可提交(submit)且稳定 ~1.2s，
+    // 并且出现了新的 Model 回合，即视为完成。
+    const initialModelTurns = document.querySelectorAll(this.selectors.TURN_MODEL).length;
+    const start = Date.now();
+    let sawGenerating = false;
+    let stableMs = 0;
 
-    let sawGeneration = false;
-    const check = (): boolean => {
-      const generating = this.isGenerating();
-      if (generating) sawGeneration = true;
-      const stopGone = !generating;
-      const idleFor = Date.now() - lastMutation;
-      const conditions = [stopGone, idleFor > 2_000].filter(Boolean).length;
-      return sawGeneration && conditions >= 2;
+    const finishOk = (): boolean => {
+      const modelTurns = document.querySelectorAll(this.selectors.TURN_MODEL).length;
+      return modelTurns > initialModelTurns;
     };
 
-    const start = Date.now();
-    try {
-      while (Date.now() - start < timeoutMs) {
-        if (check()) {
-          this.context.logger.debug('AI Studio response finished');
+    while (Date.now() - start < timeoutMs) {
+      const generating = this.isGenerating();
+      if (generating) {
+        sawGenerating = true;
+        stableMs = 0;
+      } else if (sawGenerating) {
+        stableMs += 400;
+        if (stableMs >= 1_200 && finishOk()) {
+          this.context.logger.debug('AI Studio response finished (run button stable + new model turn)');
           return true;
         }
-        await this.sleep(400);
       }
-      this.context.logger.warn(`Timed out waiting for AI Studio response after ${timeoutMs}ms`);
-      return false;
-    } finally {
-      observer.disconnect();
+      await this.sleep(400);
     }
+    this.context.logger.warn(`Timed out waiting for AI Studio response after ${timeoutMs}ms`);
+    return false;
   }
 
   /** 是否处于"生成中"：Run 按钮被切成 type="button" 且带 Stop/进度图标。 */

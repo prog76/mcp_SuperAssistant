@@ -1,0 +1,4 @@
+# 登录态 / cookie：含真实会话凭据，不入库
+fixtures/
+.user-data/
+artifacts/
