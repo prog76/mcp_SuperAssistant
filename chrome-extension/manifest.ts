@@ -47,6 +47,13 @@ const manifest = {
     '*://*.chat.z.ai/*',
     '*://*.chat.qwen.ai/*',
     '*://*.doubao.com/*',
+    // Local MCP server permissions (from aniliou-85's fork, d556e9b)
+    'http://localhost:*/*',
+    'https://localhost:*/*',
+    'http://127.0.0.1:*/*',
+    'https://127.0.0.1:*/*',
+    'http://0.0.0.0:*/*',
+    'https://0.0.0.0:*/*',
   ],
 
   permissions: ['storage', 'clipboardWrite'],
