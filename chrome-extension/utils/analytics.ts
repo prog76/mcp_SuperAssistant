@@ -1,4 +1,8 @@
-export async function sendAnalyticsEvent(name: string, _params: { [key: string]: any }): Promise<void> {
+export async function sendAnalyticsEvent(
+  name: string,
+  _params: { [key: string]: any },
+  _userProperties?: { [key: string]: any },
+): Promise<void> {
   // Analytics disabled in this fork
   console.debug(`[Analytics disabled] Event: ${name}`);
 }

@@ -159,7 +159,7 @@ export class DoubaoAdapter extends BaseAdapterPlugin {
     const selectors = this.selectors.SUBMIT_BUTTON.split(', ');
 
     for (const selector of selectors) {
-      const elements = document.querySelectorAll(selector.trim());
+      const elements = Array.from(document.querySelectorAll(selector.trim()));
       for (const element of elements) {
         if (element instanceof HTMLButtonElement || element instanceof HTMLElement) {
           const isDisabled = element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true';
@@ -180,7 +180,7 @@ export class DoubaoAdapter extends BaseAdapterPlugin {
       if (chatInput) {
         const container = chatInput.closest('form, .chat-input-area, .input-container');
         if (container) {
-          const possibleButtons = container.querySelectorAll('button, .send-button, .submit-btn');
+          const possibleButtons = Array.from(container.querySelectorAll('button, .send-button, .submit-btn'));
           for (const btn of possibleButtons) {
             const isDisabled = btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true';
             const isVisible = (btn as HTMLElement).offsetParent !== null;
@@ -557,7 +557,7 @@ export class DoubaoAdapter extends BaseAdapterPlugin {
           // If no button found, insert at the beginning of the container
           this.context.logger.debug('  No button found in container, inserting at container beginning');
           this.context.logger.debug(`  First child: ${container.firstChild ? container.firstChild.nodeName : 'null'}`);
-          return { container, insertAfter: null, insertBefore: container.firstChild };
+          return { container, insertAfter: null, insertBefore: container.firstElementChild };
         } else {
           this.context.logger.debug(`[${i}] No container found for selector: "${selector}"`);
         }
@@ -597,7 +597,7 @@ export class DoubaoAdapter extends BaseAdapterPlugin {
       this.context.logger.debug('Created floating container at top-right corner');
     }
     
-    return { container: topContainer, insertAfter: null, insertBefore: topContainer.firstChild };
+    return { container: topContainer, insertAfter: null, insertBefore: topContainer.firstElementChild };
   }
 
   private injectMCPPopover(insertionPoint: { container: Element; insertAfter: Element | null; insertBefore?: Element | null }): void {
