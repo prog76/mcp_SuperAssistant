@@ -251,7 +251,7 @@ const Settings: React.FC = () => {
               id="auto-compact-max-tokens"
               type="number"
               min={2000}
-\2              onChange={(e) => handleAutoCompactMaxTokens(e.target.value)}
+              onChange={(e) => handleAutoCompactMaxTokens(e.target.value)}
               disabled={!preferences.autoCompactEnabled}
               className={cn(
                 "w-full p-2 text-sm border rounded-md",
@@ -262,7 +262,7 @@ const Settings: React.FC = () => {
               )}
             />
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-\2            </p>
+            </p>
           </div>
         </CardContent>
       </Card>

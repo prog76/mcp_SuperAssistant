@@ -122,7 +122,7 @@ export class TokenWatcherService {
    */
   private resolveMaxTokens(): number {
     const raw = useUIStore.getState().preferences.autoCompactMaxTokens;
-\2  }
+  }
 
   /**
    * 平台原生 token 数（如 AI Studio 的 ms-token-count）。实现不存在或
