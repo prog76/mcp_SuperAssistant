@@ -122,6 +122,8 @@ export class TokenWatcherService {
    */
   private resolveMaxTokens(): number {
     const raw = useUIStore.getState().preferences.autoCompactMaxTokens;
+    const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : 512_000;
+    return Math.min(1_000_000, Math.max(2_000, value));
   }
 
   /**

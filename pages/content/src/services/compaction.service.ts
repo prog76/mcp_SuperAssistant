@@ -27,6 +27,7 @@ export interface CompactionOptions {
   targetTokens?: number; // 摘要预算，默认 1200
   todoContext?: string; // 待续接任务状态（功能 2 的 todo 上下文）
   carriedTodos?: string[]; // 压缩时携带的未完成 todo id
+  autoSend?: boolean; // 压缩后自动发送续接消息到新会话（缺省时读取 store 设置）
 }
 
 export type CompactFailReason = 'unsupported' | 'too_short' | 'no_adapter' | 'timeout' | 'failed';
