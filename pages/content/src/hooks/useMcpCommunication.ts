@@ -129,6 +129,69 @@ export const useMcpCommunication = () => {
   }, [isInitialized]);
 
   /**
+   * Get available prompts from the MCP server
+   */
+  const refreshPrompts = useCallback(async (forceRefresh = false) => {
+    if (!isInitialized) {
+      throw new Error('Communication layer not initialized');
+    }
+
+    try {
+      setLastOperationTime(Date.now());
+      logMessage(`[useMcpCommunication] Refreshing prompts (force: ${forceRefresh})`);
+
+      const prompts = await mcpClient.getAvailablePrompts(forceRefresh);
+
+      // Validate prompts structure
+      const validatedPrompts = prompts.filter(prompt =>
+        prompt &&
+        typeof prompt.name === 'string' &&
+        prompt.name.length > 0
+      );
+
+      if (validatedPrompts.length !== prompts.length) {
+        logMessage(`[useMcpCommunication] Filtered out ${prompts.length - validatedPrompts.length} invalid prompts`);
+      }
+
+      logMessage(`[useMcpCommunication] Successfully refreshed ${validatedPrompts.length} prompts`);
+
+      return validatedPrompts;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logMessage(`[useMcpCommunication] Prompt refresh failed: ${errorMessage}`);
+      // Return empty array instead of throwing
+      return [];
+    }
+  }, [isInitialized]);
+
+  /**
+   * Get a prompt from the MCP server
+   */
+  const getPrompt = useCallback(async (name: string, args?: Record<string, unknown>) => {
+    if (!isInitialized) {
+      throw new Error('Communication layer not initialized');
+    }
+
+    if (!connection.isConnected) {
+      throw new Error('Not connected to MCP server');
+    }
+
+    try {
+      setLastOperationTime(Date.now());
+      logMessage(`[useMcpCommunication] Getting prompt: ${name}`);
+
+      const result = await mcpClient.getPrompt(name, args);
+
+      logMessage(`[useMcpCommunication] Prompt retrieved successfully: ${name}`);
+      return result;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logMessage(`[useMcpCommunication] Failed to get prompt: ${name} - ${errorMessage}`);
+      throw new Error(`Failed to get prompt: ${errorMessage}`);
+    }
+  }, [isInitialized, connection.isConnected]);
+
+  /**
    * Enhanced reconnection with comprehensive state management
    */
   const forceReconnect = useCallback(async () => {
@@ -354,6 +417,7 @@ export const useMcpCommunication = () => {
     /* -------------------------------------------------------------------- */
     callTool,
     refreshTools,
+    refreshPrompts,
     forceReconnect,
     forceConnectionStatusCheck: useCallback(async () => {
       if (!isInitialized) {
@@ -363,6 +427,7 @@ export const useMcpCommunication = () => {
     }, [isInitialized]),
     getServerConfig,
     updateServerConfig,
+    getPrompt,
 
     /* -------------------------------------------------------------------- */
     /* Legacy compatibility                                                 */

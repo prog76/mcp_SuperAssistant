@@ -460,7 +460,34 @@ class McpClient {
   }
 
   /**
-   * Retrieve the list of available tools with enhanced caching and validation
+   * Get a prompt from the MCP server
+   */
+  async getPrompt(name: string, args?: Record<string, unknown>): Promise<unknown> {
+    if (!this.isInitialized) {
+      throw new Error('McpClient not initialized');
+    }
+
+    logMessage(`[McpClient] Getting prompt: ${name}`);
+
+    try {
+      const result = await contextBridge.sendMessage(
+        'background',
+        'mcp:get-prompt',
+        { name, args },
+        { timeout: 30_000 }
+      );
+
+      logMessage(`[McpClient] Prompt retrieved successfully: ${name}`);
+      return result;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logMessage(`[McpClient] Failed to get prompt: ${name} - ${errorMessage}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get available tools from background script
    */
   async getAvailableTools(forceRefresh = false): Promise<any[]> {
     if (!this.isInitialized) {
@@ -496,6 +523,37 @@ class McpClient {
       const errorMessage = error instanceof Error ? error.message : String(error);
       logMessage(`[McpClient] Failed to get available tools: ${errorMessage}`);
       throw error;
+    }
+  }
+
+  /**
+   * Get available prompts from background script
+   */
+  async getAvailablePrompts(forceRefresh = false): Promise<any[]> {
+    if (!this.isInitialized) {
+      throw new Error('McpClient not initialized');
+    }
+
+    logMessage(`[McpClient] Getting available prompts (forceRefresh: ${forceRefresh})`);
+
+    try {
+      const prompts = await contextBridge.sendMessage(
+        'background',
+        'mcp:get-prompts',
+        { forceRefresh },
+        { timeout: 10_000 }
+      );
+
+      // Validate prompts
+      const validatedPrompts = Array.isArray(prompts) ? prompts : [];
+
+      logMessage(`[McpClient] Retrieved ${validatedPrompts.length} prompts`);
+      return validatedPrompts;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logMessage(`[McpClient] Failed to get available prompts: ${errorMessage}`);
+      // Return empty array instead of throwing to prevent UI crashes
+      return [];
     }
   }
 
