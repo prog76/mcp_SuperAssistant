@@ -394,6 +394,23 @@ export class McpClient extends EventEmitter<AllEvents> {
     }
   }
 
+  async getPrompt(name: string, args?: Record<string, unknown>): Promise<unknown> {
+    if (!this.isConnectedFlag || !this.activePlugin || !this.client) {
+      throw new Error('Not connected to any MCP server');
+    }
+
+    logger.debug(`[McpClient] Getting prompt: ${name}`);
+
+    try {
+      const result = await this.activePlugin.getPrompt(this.client, name, args);
+      logger.debug(`[McpClient] Prompt retrieved: ${name}`);
+      return result;
+    } catch (error) {
+      logger.error(`[McpClient] Failed to get prompt: ${name}`, error);
+      throw error;
+    }
+  }
+
   async getPrimitives(forceRefresh: boolean = false): Promise<PrimitivesResponse> {
     if (!this.isConnectedFlag || !this.activePlugin || !this.client) {
       throw new Error('Not connected to any MCP server');
@@ -410,7 +427,7 @@ export class McpClient extends EventEmitter<AllEvents> {
       const primitives = await this.activePlugin.getPrimitives(this.client);
 
       // Normalize tools
-      const tools = this.normalizeTools(primitives.filter(p => p.type === 'tool'));
+      const tools = this.normalizeTools(primitives.filter(p => p.type === 'tool') as Primitive[]);
       const resources = primitives.filter(p => p.type === 'resource').map(p => p.value);
       const prompts = primitives.filter(p => p.type === 'prompt').map(p => p.value);
 
@@ -443,7 +460,8 @@ export class McpClient extends EventEmitter<AllEvents> {
         });
       }
 
-      logger.debug(`Retrieved ${tools.length} tools, ${resources.length} resources, ${prompts.length} prompts`,
+      logger.debug(
+        `Retrieved ${tools.length} tools, ${resources.length} resources, ${prompts.length} prompts`,
       );
       return response;
     } catch (error) {
@@ -511,7 +529,7 @@ export class McpClient extends EventEmitter<AllEvents> {
     isConnected: boolean;
     type: TransportType | null;
     uri: string | null;
-    pluginInfo: any;
+    pluginInfo: unknown;
   } {
     return {
       isConnected: this.isConnectedFlag,
