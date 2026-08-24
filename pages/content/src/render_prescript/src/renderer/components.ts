@@ -105,6 +105,22 @@ const websiteName = window.location.hostname
 
 // Pre-compiled regexes for better performance
 const INVOKE_REGEX = /<invoke name="([^"]+)"(?:\s+call_id="([^"]+)")?>/;
+
+/**
+ * Split function-call content into individually parseable JSON object strings.
+ * Handles both forms (adapted from hqzqaq's fork, 6a7d6b9):
+ *  1. NDJSON (one object per line, '\n'-separated)
+ *  2. Single-line concatenation (e.g. ChatGPT streaming renders "jsonl{...}{...}{...}",
+ *     objects joined by "}{" with no newline)
+ */
+const splitJsonObjects = (content: string): string[] => {
+  const fragments = content.split(/\}\s*\{/);
+  return fragments.map((part, index, array) => {
+    if (index === 0) return part + '}';
+    if (index === array.length - 1) return '{' + part;
+    return '{' + part + '}';
+  });
+};
 const PARAM_REGEX = /<parameter\s+name="([^"]+)"\s*(?:type="([^"]+)")?\s*>(.*?)<\/parameter>/gs;
 const CDATA_REGEX = /<!\[CDATA\[([\s\S]*?)\]\]>/;
 const NUMBER_REGEX = /^-?\d+(\.\d+)?$/;
@@ -601,11 +617,10 @@ export const addExecuteButton = (blockDiv: HTMLDivElement, rawContent: string): 
     }
 
     // Extract call_id from JSON
-    const lines = rawContent.split('\n');
     let extractedCallId: string | null = null;
-    for (const line of lines) {
+    for (const fragment of splitJsonObjects(rawContent)) {
       try {
-        const trimmed = stripLanguageTags(line);
+        const trimmed = stripLanguageTags(fragment);
         if (!trimmed) continue;
 
         const parsed = JSON.parse(trimmed);
@@ -830,10 +845,9 @@ const extractFunctionName = (rawContent: string): string | null => {
 
   if (isJSON) {
     // Extract from JSON format
-    const lines = rawContent.split('\n');
-    for (const line of lines) {
+    for (const fragment of splitJsonObjects(rawContent)) {
       try {
-        const trimmed = stripLanguageTags(line);
+        const trimmed = stripLanguageTags(fragment);
         if (!trimmed) continue;
 
         const parsed = JSON.parse(trimmed);
