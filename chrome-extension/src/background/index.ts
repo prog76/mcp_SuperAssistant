@@ -8,6 +8,7 @@ import {
   checkMcpServerConnection,
   callToolWithBackwardsCompatibility,
   getPrimitivesWithBackwardsCompatibility,
+  getPromptWithBackwardsCompatibility,
   resetMcpConnectionState,
   resetMcpConnectionStateForRecovery,
   normalizeToolsFromPrimitives as normalizeTools,
@@ -793,6 +794,53 @@ async function handleMcpMessage(
           logger.error('[Background] Error getting tools:', error);
           // Return empty array instead of throwing to prevent UI crashes
           result = [];
+        }
+        break;
+      }
+
+      case 'mcp:get-prompts': {
+        const { forceRefresh = false } = payload;
+        logger.debug(`Getting prompts (forceRefresh: ${forceRefresh})`);
+
+        try {
+          const primitives = await getPrimitivesWithBackwardsCompatibility(getServerUrl(), forceRefresh, connectionType);
+          logger.debug(`Retrieved ${primitives.length} primitives from server`);
+
+          // Filter to only prompts
+          const prompts = primitives
+            .filter(p => p.type === 'prompt')
+            .map(p => p.value);
+
+          logger.debug(`Returning ${prompts.length} prompts to content script`);
+
+          result = prompts;
+        } catch (error) {
+          logger.error('[Background] Error getting prompts:', error);
+          // Return empty array instead of throwing to prevent UI crashes
+          result = [];
+        }
+        break;
+      }
+
+      case 'mcp:get-prompt': {
+        const { name, args } = payload;
+        logger.debug(`Getting prompt: ${name} with args:`, args);
+
+        try {
+          if (!name || typeof name !== 'string') {
+            throw new Error('Prompt name is required and must be a string');
+          }
+
+          // Use the getPrompt helper function which handles connection and calls the actual MCP endpoint
+          const promptResult = await getPromptWithBackwardsCompatibility(getServerUrl(), name, args || {}, connectionType);
+
+          logger.debug(`Retrieved prompt '${name}' with messages from server`);
+
+          // Return the full prompt result including messages
+          result = promptResult;
+        } catch (error) {
+          logger.error(`[Background] Error getting prompt '${name}':`, error);
+          throw new Error(`Failed to get prompt '${name}': ${error instanceof Error ? error.message : String(error)}`);
         }
         break;
       }

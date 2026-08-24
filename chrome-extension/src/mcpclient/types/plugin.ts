@@ -72,6 +72,9 @@ export interface ITransportPlugin {
   // Tool operations
   callTool(client: Client, toolName: string, args: any, options?: ToolCallOptions): Promise<any>;
   getPrimitives(client: Client): Promise<any[]>;
+
+  // Prompt operations
+  getPrompt?(client: Client, name: string, args?: Record<string, unknown>): Promise<unknown>;
 }
 
 export interface PluginEvents {

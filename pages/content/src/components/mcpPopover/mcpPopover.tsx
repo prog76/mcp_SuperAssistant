@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useCurrentAdapter, useUserPreferences, useMCPState } from '../../hooks';
+import { useCurrentAdapter, useUserPreferences, useMCPState, useMcpCommunication } from '../../hooks';
 import PopoverPortal from './PopoverPortal';
 import { instructionsState } from '../sidebar/Instructions/InstructionManager';
 import { AutomationService } from '../../services/automation.service';
@@ -441,9 +441,9 @@ input:checked + .mcp-toggle-slider:before {
   z-index: 2147483647 !important;
   white-space: nowrap !important;
   pointer-events: none !important;
-  width: 150px !important;
+  width: max-content !important;
   min-width: 150px !important;
-  max-width: 150px !important;
+  max-width: none !important;
   box-sizing: border-box !important;
   font-family: inherit !important;
   font-synthesis: none !important;
@@ -701,7 +701,33 @@ export const MCPPopover: React.FC<MCPPopoverProps> = ({ toggleStateManager, adap
   const [isHoverOverlayVisible, setIsHoverOverlayVisible] = useState(false);
   const [hoverOverlayPosition, setHoverOverlayPosition] = useState({ x: 0, y: 0 });
   const [isSidebarVisible, setIsSidebarVisible] = useState(true); // Track sidebar visibility
+  const [availablePrompts, setAvailablePrompts] = useState<Array<{ name: string; description?: string; arguments?: any }>>([]);
   const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Get MCP communication hook for prompt operations
+  const { refreshPrompts, getPrompt } = useMcpCommunication();
+
+  // Fetch available prompts when MCP connects
+  useEffect(() => {
+    const fetchPrompts = async () => {
+      if (!state.mcpEnabled) {
+        setAvailablePrompts([]);
+        return;
+      }
+
+      try {
+        logger.debug('[MCPPopover] Fetching available prompts...');
+        const prompts = await refreshPrompts();
+        setAvailablePrompts(prompts);
+        logger.debug(`[MCPPopover] Loaded ${prompts.length} prompts`);
+      } catch (error) {
+        logger.debug('[MCPPopover] Failed to fetch prompts:', error);
+        setAvailablePrompts([]);
+      }
+    };
+
+    fetchPrompts();
+  }, [state.mcpEnabled, refreshPrompts]);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const hoverOverlayRef = useRef<HTMLDivElement>(null);
@@ -946,6 +972,92 @@ export const MCPPopover: React.FC<MCPPopoverProps> = ({ toggleStateManager, adap
     }
   };
 
+  /**
+   * Handle prompt selection and execution
+   */
+  const handlePromptSelect = async (promptName: string) => {
+    console.log('[MCPPopover] ====== PROMPT CLICKED ======');
+    console.log('[MCPPopover] Prompt name:', promptName);
+    console.log('[MCPPopover] MCP enabled:', state.mcpEnabled);
+    console.log('[MCPPopover] Adapter active:', isAdapterActive);
+
+    try {
+      console.log('[MCPPopover] Calling getPrompt...');
+
+      // Call getPrompt (already destructured from useMcpCommunication above)
+      const result = await getPrompt(promptName);
+
+      console.log('[MCPPopover] getPrompt result:', result);
+      console.log('[MCPPopover] Result type:', typeof result);
+
+      // MCP prompt definition has: name, description, and optionally messages
+      // We'll use the description as the content, or messages if available
+      let promptContent: string | null = null;
+
+      if (result && typeof result === 'object') {
+        // Try to get content from messages array first (MCP spec)
+        if ('messages' in result && Array.isArray((result as any).messages)) {
+          const messages = (result as any).messages;
+          promptContent = messages
+            .map((msg: any) => {
+              const content = msg.content;
+              // Handle MCP content object: { type: "text", text: "..." }
+              if (content && typeof content === 'object') {
+                return content.text || content.content || '';
+              }
+              // Handle string content
+              if (typeof content === 'string') return content;
+              // Handle msg.text fallback
+              return msg.text || '';
+            })
+            .filter((text: string) => text && text.trim())
+            .join('\n');
+          console.log('[MCPPopover] Extracted content from messages:', promptContent);
+        }
+        // Fall back to description field
+        else if ('description' in result && result.description) {
+          promptContent = result.description as string;
+          console.log('[MCPPopover] Using description as content:', promptContent);
+        }
+      }
+
+      if (promptContent) {
+        // Prompt controls whether instructions are included via the {{ instructions }} placeholder.
+        // - If the prompt contains "{{ instructions }}", it is replaced with the instructions
+        //   at that exact position.
+        // - If the prompt doesn't contain the placeholder, the prompt is used as-is
+        //   without prepending instructions.
+        const INSTRUCTIONS_PLACEHOLDER = /\{\{\s*instructions\s*\}\}/g;
+
+        let finalContent: string;
+
+        if (INSTRUCTIONS_PLACEHOLDER.test(promptContent)) {
+          finalContent = promptContent.replace(
+            INSTRUCTIONS_PLACEHOLDER,
+            instructions && instructions.trim() ? instructions : '',
+          );
+          console.log('[MCPPopover] Replaced {{ instructions }} placeholder with instructions');
+        } else {
+          finalContent = promptContent;
+          console.log('[MCPPopover] No {{ instructions }} placeholder found, using prompt content as-is');
+        }
+
+        // Insert the final content into the chat input
+        if (insertText) {
+          console.log('[MCPPopover] Inserting text:', finalContent);
+          await insertText(finalContent);
+          console.log('[MCPPopover] Text inserted successfully');
+        }
+      } else {
+        console.warn('[MCPPopover] No content found in prompt result:', result);
+      }
+    } catch (error) {
+      console.error('[MCPPopover] ====== ERROR ======');
+      console.error('[MCPPopover] Failed to execute prompt:', promptName);
+      console.error('[MCPPopover] Error details:', error);
+    }
+  };
+
   const handleAttach = async () => {
     // Add more detailed debugging
     logger.debug(`handleAttach called - isAdapterActive: ${isAdapterActive}, activePlugin: ${!!activePlugin}, attachFile: ${!!attachFile}`);
@@ -1015,8 +1127,9 @@ export const MCPPopover: React.FC<MCPPopoverProps> = ({ toggleStateManager, adap
   const updateHoverOverlayPosition = useCallback(() => {
     if (buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
-      const overlayWidth = 150; // fixed width from CSS (updated for 4 buttons)
-      const overlayHeight = 180; // approximate height for 4 buttons
+      const overlay = hoverOverlayRef.current;
+      const overlayWidth = overlay ? overlay.offsetWidth : 150;
+      const overlayHeight = overlay ? overlay.offsetHeight : 180;
 
       // Calculate position above the button
       let x = rect.right - overlayWidth + 10; // Align to right edge with some offset
@@ -1184,6 +1297,18 @@ export const MCPPopover: React.FC<MCPPopoverProps> = ({ toggleStateManager, adap
             top: `${hoverOverlayPosition.y}px`,
           }}
         >
+          {/* Prompt buttons (dynamic) */}
+          {availablePrompts.map(prompt => (
+            <button
+              key={`hover-prompt-${prompt.name}`}
+              className="mcp-hover-button"
+              onClick={() => handlePromptSelect(prompt.name)}
+              title={prompt.description || `Execute prompt: ${prompt.name}`}
+              type="button"
+            >
+              {prompt.name}
+            </button>
+          ))}
           <button
             className="mcp-hover-button"
             onClick={handleInsert}
@@ -1311,6 +1436,7 @@ export const MCPPopover: React.FC<MCPPopoverProps> = ({ toggleStateManager, adap
               boxSizing: 'border-box',
               overflow: 'auto',
             }}>
+            {/* Instructions Section */}
             <div
               style={{
                 fontWeight: '600',
@@ -1422,6 +1548,7 @@ export const MCPPopover: React.FC<MCPPopoverProps> = ({ toggleStateManager, adap
                 {attachStatus}
               </button>
             </div>
+
           </div>
         </div>
       </PopoverPortal>

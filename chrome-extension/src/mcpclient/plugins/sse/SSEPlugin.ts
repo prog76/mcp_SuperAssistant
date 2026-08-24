@@ -209,4 +209,24 @@ export class SSEPlugin implements ITransportPlugin {
       throw error;
     }
   }
+
+  async getPrompt(client: Client, name: string, args?: Record<string, unknown>): Promise<unknown> {
+    if (!this.isConnected()) {
+      throw new Error('SSE Plugin: Not connected');
+    }
+
+    logger.debug(`Getting prompt: ${name}`);
+
+    try {
+      const result = await client.getPrompt({
+        name,
+        arguments: args as Record<string, string>,
+      });
+      logger.debug(`Prompt retrieved: ${name}`);
+      return result;
+    } catch (error) {
+      logger.error(`Failed to get prompt: ${name}`, error);
+      throw error;
+    }
+  }
 }

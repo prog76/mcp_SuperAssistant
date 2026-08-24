@@ -214,6 +214,22 @@ export async function getPrimitivesWithBackwardsCompatibility(
   return primitives;
 }
 
+export async function getPromptWithBackwardsCompatibility(
+  uri: string,
+  promptName: string,
+  args?: Record<string, unknown>,
+  transportType?: import('./types/plugin.js').TransportType
+): Promise<unknown> {
+  const client = await getGlobalClient();
+  const type = transportType || detectTransportType(uri);
+
+  if (!client.isConnected()) {
+    await client.connect({ uri, type });
+  }
+
+  return await client.getPrompt(promptName, args);
+}
+
 export async function forceReconnectToMcpServer(uri: string, transportType?: import('./types/plugin.js').TransportType): Promise<void> {
   const client = await getGlobalClient();
   const type = transportType || detectTransportType(uri);
