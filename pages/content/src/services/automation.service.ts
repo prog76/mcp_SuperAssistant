@@ -279,9 +279,16 @@ export class AutomationService {
     const generation = this.iterationGeneration;
 
     if (this.successCount > 0) {
-      // At least one success → try to submit
-      console.log(`[AutomationService] Decision: submit (${this.successCount} success, ${this.errorCount} errors)`);
-      await this.trySubmit();
+      // At least one success → check if auto-submit is enabled before submitting
+      const automationState = await this.getAutomationState();
+      if (automationState?.autoSubmit) {
+        console.log(`[AutomationService] Decision: submit (${this.successCount} success, ${this.errorCount} errors)`);
+        await this.trySubmit();
+      } else {
+        console.log(
+          `[AutomationService] Auto-submit is disabled, skipping submit (${this.successCount} success, ${this.errorCount} errors)`,
+        );
+      }
     } else {
       // No successes at all → notify
       console.warn(`[AutomationService] Decision: notify (${this.errorCount} errors, 0 successes)`);
