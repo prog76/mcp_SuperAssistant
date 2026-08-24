@@ -222,6 +222,10 @@ const Settings: React.FC = () => {
                 {versionInfo.buildTimestamp ? 'Compare build numbers to check for updates' : 'Build timestamp unavailable'}
               </p>
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* 上下文压缩 */}
       <Card className="border-slate-200 dark:border-slate-700 dark:bg-slate-800">
         <CardContent className="p-4 space-y-3">
@@ -251,6 +255,9 @@ const Settings: React.FC = () => {
               id="auto-compact-max-tokens"
               type="number"
               min={2000}
+              max={1000000}
+              step={1}
+              value={preferences.autoCompactMaxTokens ?? 512000}
               onChange={(e) => handleAutoCompactMaxTokens(e.target.value)}
               disabled={!preferences.autoCompactEnabled}
               className={cn(
@@ -262,6 +269,7 @@ const Settings: React.FC = () => {
               )}
             />
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              当前对话估算 token 达到该值时自动触发压缩（下限 2000，默认 512000，无上限限制）
             </p>
           </div>
         </CardContent>
