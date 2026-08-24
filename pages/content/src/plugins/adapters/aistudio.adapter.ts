@@ -42,18 +42,18 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     BUTTON_INSERTION_CONTAINER: '.buttons-row .button-wrapper, .buttons-row, .prompt-box-container .buttons-row, .prompt-input-wrapper, .actions-container',
     // Alternative insertion points
     FALLBACK_INSERTION: '.prompt-box-container, .input-area, .chat-input-container, .conversation-input',
-    // 会话轮容器（实测）：User/Model 回合各自带 data-turn-role；内容在 .turn-content
+    // Turn containers (verified): User/Model turns each carry data-turn-role; content lives in .turn-content
     TURN: '[data-turn-role]',
     TURN_USER: '[data-turn-role="User"]',
     TURN_MODEL: '[data-turn-role="Model"]',
-    // 思维链（模型"思考过程"）在 mat-expansion-panel 内，压缩读取时必须排除
+    // Chain-of-thought (model "thinking") lives inside mat-expansion-panel; must be excluded when reading for compaction
     THINKING_PANEL: '.mat-expansion-panel',
-    // 原生累计 token 数（如 "4,994 tokens"）
+    // Native cumulative token count (e.g. "4,994 tokens")
     TOKEN_COUNT: '.v3-token-count-value',
-    // Run/停止是同一个 ms-run-button button：
-    //   空闲 type="submit"（Run），生成中 type="button" + .spin + "Stop"
+    // Run/stop are the same ms-run-button button:
+    //   idle type="submit" (Run), generating type="button" + .spin + "Stop"
     RUN_BUTTON: 'ms-run-button button',
-    // 新建会话
+    // New conversation
     NEW_CHAT_BUTTON: 'button[aria-label="New chat"]'
   };
 
@@ -372,7 +372,7 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
 
     try {
       // Use the proven chatInputHandler method。
-      // 新建会话后 composer 可能仍处于渲染阶段，先轮询等待输入框出现再插入。
+      // After creating a conversation the composer may still be rendering; poll for the input before inserting.
       const success = await this.waitAndInsertText(text);
 
       if (success) {
@@ -399,33 +399,33 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
   }
 
   /**
-   * 新建会话切换后，AI Studio 会有“保存会话”的加载过程：composer 可能尚未渲染，
-   * 或渲染后又被加载流程重置。因此：
-   *  - 最多等待 20s（新建页加载可能超过默认的短等待）；
-   *  - 写入后短暂稳定并校验文本确实保留，被清空则继续重插；
-   *  - 已持有文本时直接成功，避免重复追加。
+   * After a new-conversation switch AI Studio shows a "saving conversation" phase: the composer may not be rendered,
+   * or may be reset by that loading flow. Therefore:
+   *  - wait up to 20s (new-page load can exceed short default waits);
+   *  - after writing, verify the text persists and re-insert if cleared;
+   *  - succeed immediately when text is already present, avoiding duplicates.
    */
   private async waitAndInsertText(text: string, timeoutMs = 20_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
-    const probe = text.slice(-40); // 用末尾片段校验文本是否真正保留在输入框
+    const probe = text.slice(-40); // tail snippet used to verify the text actually persisted in the input
     while (Date.now() < deadline) {
       const input = findChatInputElement();
       if (input) {
         if (input.value.includes(probe)) {
-          return true; // 已写入且仍在
+          return true; // written and still present
         }
         if (insertTextToChatInput(text)) {
-          await this.sleep(800); // 避开加载过程的重置
+          await this.sleep(800); // ride out the loading-flow reset
           const retained = findChatInputElement();
           if (retained && retained.value.includes(probe)) {
             return true;
           }
-          this.context.logger.debug('AI Studio 插入文本被新建会话加载过程清空，等待重插');
+          this.context.logger.debug('AI Studio inserted text was cleared by new-conversation loading; waiting to re-insert');
         }
       }
       await this.sleep(250);
     }
-    this.context.logger.warn(`AI Studio 等待输入框就绪超时（${timeoutMs}ms）`);
+    this.context.logger.warn(`AI Studio timed out waiting for input box (${timeoutMs}ms)`);
     return false;
   }
 
@@ -1561,16 +1561,16 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
   }
 
   // ---------------------------------------------------------------------
-  // Conversation capabilities (上下文压缩 / 会话读写)
-  // 选择器基于 aistudio.google.com 实测（2026-08）：
-  //   - 回合容器 [data-turn-role="User"|"Model"]，内容在 .turn-content
-  //   - 模型思维链在 .mat-expansion-panel 内（读取时排除）
-  //   - Run/停止同一 ms-run-button button：空闲 type="submit"、生成中 type="button" + .spin
-  //   - 原生累计 token：.v3-token-count-value
-  //   - 新建会话：button[aria-label="New chat"]
+  // Conversation capabilities (context compaction / conversation read-write)
+  // Selectors verified against aistudio.google.com (Aug 2026):
+  //   - turn containers [data-turn-role="User"|"Model"], content in .turn-content
+  //   - model chain-of-thought inside .mat-expansion-panel (excluded when reading)
+  //   - Run/stop share ms-run-button: idle type=submit, generating type=button + .spin
+  //   - native token count: .v3-token-count-value
+  //   - new chat: button[aria-label="New chat"]
   // ---------------------------------------------------------------------
 
-  /** AI Studio 原生累计 token 数（免前端估算）。读不到返回 null 由估算兜底。 */
+  /** AI Studio native token count (avoids client-side estimation). Returns null to fall back to estimation. */
   async readNativeTokenCount(): Promise<number | null> {
     try {
       const el = document.querySelector(this.selectors.TOKEN_COUNT);
@@ -1585,9 +1585,9 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
   }
 
   /**
-   * 读取整段会话（用户 + 模型回合），排除思维链面板。
-   * 文本取自 .turn-content；长对话若 AI Studio 虚拟滚动，只读当前已渲染回合
-   * （实时监视用；压缩服务可另做滚动采集）。
+   * Read the full conversation (user + model turns), excluding chain-of-thought panels.
+   * Text comes from .turn-content; on long conversations AI Studio may virtualize, so only currently rendered turns
+   * are read (sufficient for live monitoring; compaction can add scroll harvesting separately).
    */
   async readConversation(): Promise<ConversationMessage[] | null> {
     this.context.logger.debug('Reading AI Studio conversation');
@@ -1617,7 +1617,7 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     return messages;
   }
 
-  /** 新建会话：点击 New chat 按钮（SPA 无刷新）。 */
+  /** New conversation: click the New chat button (SPA, no reload). */
   async newConversation(): Promise<boolean> {
     this.context.logger.debug('Attempting to start a new AI Studio conversation');
 
@@ -1628,13 +1628,13 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     }
     btn.click();
 
-    // 长对话/刚生成完摘要时，New chat 会触发"保存对话"流程，时长随上下文线性增长
-    // （实测可达 1-2 分钟以上）。因此轮询等待要足够久，并处理可能的确认弹窗。
+    // On long conversations / right after summarizing, New chat triggers a "save conversation" flow whose duration grows with context
+    // (observed 1-2+ minutes). Poll long enough and handle any confirmation dialog.
     const deadline = Date.now() + 180_000;
     let dialogHandled = false;
     while (Date.now() < deadline) {
       if (this.isFreshConversation()) return true;
-      // 若出现新建/保存确认弹窗，自动接受（首次命中即可，避免重复点叠加弹窗）
+      // Auto-accept new/save confirmation dialogs if they appear (accept once; avoid stacking dialogs by repeat clicks)
       if (!dialogHandled) {
         dialogHandled = this.acceptNewChatConfirmDialog();
       }
@@ -1653,8 +1653,8 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
   }
 
   /**
-   * 新建长对话时 AI Studio 可能弹出"保存/放弃当前会话"类确认；命中即点击确认。
-   * 用(新建/重新开始/discard/放弃)等语义关键词规避误点到 toaster/错误弹窗。
+   * When starting a new long conversation AI Studio may show a save/discard confirmation; accept it when detected.
+   * Semantic keywords (new/restart/discard) prevent mis-clicking toasts or error dialogs.
    */
   private acceptNewChatConfirmDialog(): boolean {
     const dialog = document.querySelector(
@@ -1672,7 +1672,7 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     return true;
   }
 
-  /** 读取最后一条模型回复（含文本与代码块）。 */
+  /** Read the last model reply (text and code blocks). */
   async readLastResponse(): Promise<ResponsePayload | null> {
     this.context.logger.debug('Reading last AI Studio model response');
 
@@ -1698,16 +1698,16 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
   }
 
   /**
-   * 等待模型生成完成。
-   * 判定：ms-run-button 内 button 由 type="submit"（Run）在生成时切成
-   * type="button" + .spin + "Stop"，切回 submit 且安全区 2s 无变更即完成。
+   * Wait for model generation to complete.
+   * Detection: inside ms-run-button the button switches from type=submit (Run) while generating to
+   * type=button + .spin + "Stop"; completion = back to submit plus ~2s of stability.
    */
   async waitForResponse(timeoutMs: number = 60_000): Promise<boolean> {
     this.context.logger.debug(`Waiting for AI Studio response (timeout ${timeoutMs}ms)`);
 
-    // 不再依赖"main 内 2s 无 DOM 变更"(AI Studio 持续更新导致永不满足而超时)。
-    // 改用 Run 按钮状态机：观察到"生成中(Stop)"→ 回到可提交(submit)且稳定 ~1.2s，
-    // 并且出现了新的 Model 回合，即视为完成。
+    // No longer rely on "2s without DOM changes in main" (AI Studio keeps updating, so it never settles and times out).
+    // Use a Run-button state machine instead: observe generating (Stop) -> back to submit and stable ~1.2s,
+    // plus a new Model turn appearing — that counts as complete.
     const initialModelTurns = document.querySelectorAll(this.selectors.TURN_MODEL).length;
     const start = Date.now();
     let sawGenerating = false;
@@ -1736,7 +1736,7 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     return false;
   }
 
-  /** 是否处于"生成中"：Run 按钮被切成 type="button" 且带 Stop/进度图标。 */
+  /** Whether generation is in progress: the Run button switched to type=button with a Stop/progress icon. */
   private isGenerating(): boolean {
     const btn = document.querySelector<HTMLButtonElement>(this.selectors.RUN_BUTTON);
     if (!btn) return false;
@@ -1750,7 +1750,7 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     return !!el.closest(this.selectors.THINKING_PANEL);
   }
 
-  /** 提取回合容器纯文本：克隆后移除思维链面板，再取 innerText（含代码块换行）。 */
+  /** Extract turn container plain text: clone, remove chain-of-thought panels, then read innerText (keeps code block breaks). */
   private extractTurnText(turn: HTMLElement): string {
     try {
       const clone = turn.cloneNode(true) as HTMLElement;
@@ -1847,7 +1847,7 @@ export const findChatInputElement = (): HTMLTextAreaElement | null => {
   }
 
   // Final fallback: any visible textarea (prefer the active composer one).
-  // 新建会话页 placeholder 可能滞后，用可见性过滤避免命中隐藏模板 textarea。
+  // The new-chat page placeholder may lag; filter by visibility to avoid hidden template textareas.
   chatInput = Array.from(document.querySelectorAll('textarea.textarea')).find(el => {
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
@@ -1895,7 +1895,7 @@ export const insertTextToChatInput = (text: string): boolean => {
       // Add new line before and after the current text if there's existing content
       const formattedText = currentText ? `${currentText}\n\n${text}` : text;
 
-      // 用原生 setter 写入 value，绕过可能的 value tracker，确保 Angular 表单同步
+      // Write value via the native setter to bypass the value tracker, keeping Angular forms in sync
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
       if (valueSetter) {
         valueSetter.call(chatInput, formattedText);
@@ -1904,7 +1904,7 @@ export const insertTextToChatInput = (text: string): boolean => {
       }
       chatInput.selectionStart = chatInput.selectionEnd = formattedText.length;
 
-      // 触发输入事件让 AI Studio（Angular）同步模型并启用 Run 按钮
+      // Fire input events so AI Studio (Angular) syncs its model and enables Run
       try {
         chatInput.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
       } catch {
@@ -2071,8 +2071,8 @@ export const submitChatInput = (maxWaitTime = 5000): Promise<boolean> => {
         return;
       }
 
-      // AI Studio Run 按钮：空闲 type="submit"（Run），生成中 type="button" + "Stop"。
-      // 可用态由 aria-disabled 表达（false=可点）。点击 Run 即发送。
+      // AI Studio Run button: idle type=submit (Run), generating type=button + "Stop".
+      // Availability is expressed via aria-disabled (false = clickable). Clicking Run sends.
       const findRunButton = (): HTMLButtonElement | null => {
         return (
           (document.querySelector('ms-run-button button') as HTMLButtonElement | null) ||
@@ -2083,7 +2083,7 @@ export const submitChatInput = (maxWaitTime = 5000): Promise<boolean> => {
 
       const isRunEnabled = (btn: HTMLButtonElement | null): boolean => {
         if (!btn) return false;
-        if (btn.type === 'button') return false; // 生成中（Stop）
+        if (btn.type === 'button') return false; // generating (Stop)
         if (btn.disabled) return false;
         if (btn.getAttribute('disabled') !== null) return false;
         if (btn.getAttribute('aria-disabled') === 'true') return false;
@@ -2091,7 +2091,7 @@ export const submitChatInput = (maxWaitTime = 5000): Promise<boolean> => {
         return true;
       };
 
-      // AI Studio 提交快捷键为 ⌘/Ctrl+Enter（Run 按钮图标为 ⌘+Return）。
+      // AI Studio submit hotkey is ⌘/Ctrl+Enter (the Run button icon shows ⌘+Return).
       const pressSubmitShortcut = (): void => {
         chatInput.focus();
         const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
@@ -2110,7 +2110,7 @@ export const submitChatInput = (maxWaitTime = 5000): Promise<boolean> => {
         chatInput.dispatchEvent(new KeyboardEvent('keydown', base));
         chatInput.dispatchEvent(new KeyboardEvent('keyup', base));
 
-        // 额外兜底：直接点击当前状态下的 Run 按钮
+        // Extra fallback: click the Run button in whatever state it is in
         const run = findRunButton();
         if (run) {
           try {
@@ -2132,7 +2132,7 @@ export const submitChatInput = (maxWaitTime = 5000): Promise<boolean> => {
       const interval = setInterval(() => {
         const run = findRunButton();
 
-        // 等待期间用户/上游已自行发出，检测到生成态即视为已提交，避免卡死
+        // If the user/upstream already sent while waiting, treat detected generation as submitted to avoid deadlock
         if (run && run.type === 'button') {
           clearInterval(interval);
           logger.debug('AI Studio already generating a response, treat as submitted');
@@ -2156,10 +2156,10 @@ export const submitChatInput = (maxWaitTime = 5000): Promise<boolean> => {
         }
       }, 150);
 
-      // 首次立即检查
+      // check immediately on first pass
       const run = findRunButton();
       if (run && run.type === 'button') {
-        // 已在生成中，命中重试即可（间隔会随后判定）
+        // already generating — retry will catch it (interval decides later)
       } else if (isRunEnabled(run)) {
         clearInterval(interval);
         run!.click();

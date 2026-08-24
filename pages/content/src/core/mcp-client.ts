@@ -366,7 +366,7 @@ class McpClient {
    * Call a tool on the MCP server with enhanced error handling and validation
    */
   async callTool(toolName: string, args: Record<string, unknown>): Promise<any> {
-    // 内置工具（InternalToolProvider）：不依赖 MCP 连接，直接本地执行
+    // Built-in tools (InternalToolProvider): no MCP connection needed — executed locally
     if (isInternalTool(toolName)) {
       return await executeInternalTool(toolName, args);
     }

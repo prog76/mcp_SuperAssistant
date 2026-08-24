@@ -1,6 +1,6 @@
 /**
- * 上下文压缩 Store（zustand）。
- * 维护压缩记录列表、当前进行中的压缩状态与错误信息，供侧边栏/压缩面板消费。
+ * Context compaction store (zustand).
+ * Maintains the compaction record list, in-progress state and errors; consumed by the sidebar / compaction panel.
  */
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
@@ -16,14 +16,14 @@ import {
 
 const logger = createLogger('useCompactionStore');
 
-const AUTO_SEND_KEY = 'mcp_compact_autosend'; // 压缩后是否自动发送到新会话
+const AUTO_SEND_KEY = 'mcp_compact_autosend'; // whether to auto-send to a new conversation after compaction
 
 export interface CompactionState {
   records: CompactionRecord[];
   activeCompactionId: string | null;
   isCompacting: boolean;
   lastError: string | null;
-  autoSend: boolean; // 压缩完成后自动发送到新会话（走两步的第二步）
+  autoSend: boolean; // after compaction, automatically send to a new chat (step two of the flow)
 
   loadRecords: () => Promise<void>;
   addRecord: (record: CompactionRecord) => Promise<void>;

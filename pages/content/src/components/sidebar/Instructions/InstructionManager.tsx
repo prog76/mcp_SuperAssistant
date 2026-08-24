@@ -12,7 +12,7 @@ import { instructionsState } from '@src/utils/instructions-state';
 
 const logger = createLogger('InstructionManager');
 
-// 全局共享状态已抽离到 utils/instructions-state.ts，这里保持再导出以兼容旧引用
+// Shared state moved to utils/instructions-state.ts; re-exported here for backwards compatibility
 export { instructionsState };
 
 interface InstructionManagerProps {

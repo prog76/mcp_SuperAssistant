@@ -9,7 +9,7 @@ import { createLogger } from '@extension/shared/lib/logger';
 
 const logger = createLogger('useToolStore');
 
-// 合并扩展内置工具（InternalToolProvider）：去掉与内置工具同名的外部工具，再追加内置工具。
+// Merge built-in extension tools (InternalToolProvider): drop external tools with clashing names, then append built-ins.
 const mergeWithInternalTools = (tools: Tool[]): Tool[] => {
   const internal = getInternalTools();
   const internalNames = new Set(internal.map(t => t.name));
@@ -45,7 +45,7 @@ export interface ToolState {
 }
 
 const initialState: Omit<ToolState, 'setAvailableTools' | 'addDetectedTool' | 'clearDetectedTools' | 'startToolExecution' | 'updateToolExecution' | 'completeToolExecution' | 'getToolExecution' | 'enableTool' | 'disableTool' | 'enableAllTools' | 'disableAllTools' | 'isToolEnabled' | 'loadToolEnablementState'> = {
-  // 内置工具（InternalToolProvider）始终可见，即使未连接 MCP 也能执行
+  // Built-in tools (InternalToolProvider) are always visible and executable without an MCP connection
   availableTools: getInternalTools(),
   detectedTools: [],
   toolExecutions: {},
@@ -61,7 +61,7 @@ export const useToolStore = create<ToolState>()(
       ...initialState,
 
       setAvailableTools: (tools: Tool[]) => {
-        // 合并扩展内置工具（InternalToolProvider）
+        // Merge built-in extension tools (InternalToolProvider)
         const merged = mergeWithInternalTools(tools);
         set({ availableTools: merged });
         logger.debug('[ToolStore] Available tools updated:', merged);

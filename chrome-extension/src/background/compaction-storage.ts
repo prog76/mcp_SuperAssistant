@@ -1,9 +1,9 @@
 /**
- * 上下文压缩大文本存档（扩展 origin 的 IndexedDB）。
+ * Context compaction large-text archive (extension-origin IndexedDB).
  *
- * content script 里的 IndexedDB 与页面同源（页面自身 JS 可读、随站点数据清除），
- * 因此全文存档必须经 chrome.runtime.sendMessage 路由到 background，
- * 在扩展自身 origin（service worker）下读写 IndexedDB。
+ * The content-script IndexedDB shares the page origin (page JS can read it; it is cleared with site data),
+ * so full-text archives must be routed via chrome.runtime.sendMessage to the background,
+ * which reads/writes IndexedDB under the extension origin (service worker).
  */
 import { createLogger } from '@extension/shared/lib/logger';
 
@@ -14,7 +14,7 @@ const DB_VERSION = 1;
 const STORE_NAME = 'archives';
 
 export interface ArchiveEntry {
-  id: string; // 如 `transcript_${compactionId}` / `summary_${compactionId}`
+  id: string; // e.g. `transcript_${compactionId}` / `summary_${compactionId}`
   content: string;
   createdAt: number;
 }
@@ -34,7 +34,7 @@ function openArchiveDb(): Promise<IDBDatabase> {
 }
 
 /**
- * 写入一条大文本存档（transcript / summary）。
+ * Write one large-text archive entry (transcript / summary).
  */
 export async function archivePut(entry: ArchiveEntry): Promise<boolean> {
   try {
@@ -58,7 +58,7 @@ export async function archivePut(entry: ArchiveEntry): Promise<boolean> {
 }
 
 /**
- * 读取一条大文本存档；不存在返回 null。
+ * Read one large-text archive entry; returns null when missing.
  */
 export async function archiveGet(id: string): Promise<string | null> {
   try {

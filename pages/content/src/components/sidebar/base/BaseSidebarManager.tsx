@@ -478,8 +478,8 @@ export abstract class BaseSidebarManager {
 
     // Now safe to set visible and render with enhanced animations
     if (this.shadowHost) {
-      // 始终把 shadow host 追加到 body 末尾，保证与 AI Studio 右侧面板
-      // 同等 z-index 时本侧边栏 DOM 靠后、绘制在上层
+      // Always append the shadow host to the end of body so that, at equal z-index with AI Studio's side panel,
+      // this sidebar sits later in the DOM and paints on top
       document.body.appendChild(this.shadowHost);
 
       // Start with immediate visibility but with opacity 0 for smooth transition

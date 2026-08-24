@@ -23,8 +23,8 @@ export type AdapterCapability =
   | 'element-selection'
   | 'screenshot-capture'
   | 'dom-manipulation'
-  | 'conversation-read'      // 读取当前会话全文（上下文压缩/多智能体）
-  | 'conversation-create';   // 新建会话
+  | 'conversation-read'      // read the full current conversation (compaction / multi-agent)
+  | 'conversation-create';   // create a new conversation
 
 export type PluginType =
   | 'sidebar'
@@ -72,18 +72,18 @@ export interface PluginUtils {
 }
 
 /**
- * 会话中的一条消息（纯文本，HTML 已剥离）。
- * 用于上下文压缩的 readConversation / 多智能体的 readLastResponse。
+ * One message in a conversation (plain text, HTML stripped).
+ * Used by compaction readConversation / multi-agent readLastResponse.
  */
 export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;           // 纯文本（HTML 已剥离，代码块保留 markdown 围栏）
+  content: string;           // plain text (HTML stripped; code blocks keep markdown fences)
   timestamp?: number;
-  messageId?: string;        // 平台原生消息 id，用于去重/续读
+  messageId?: string;        // platform-native message id, for dedup / continuation reads
 }
 
 /**
- * AI 回复载荷（多模态：文本 + 代码块 + 文件链接）。
+ * AI reply payload (multimodal: text + code blocks + file links).
  */
 export interface ResponsePayload {
   text: string;
@@ -117,16 +117,16 @@ export interface AdapterPlugin {
   navigateToUrl?(url: string): Promise<boolean>;
   executeScript?<T>(script: string | (() => T)): Promise<T | null>;
 
-  // Conversation capabilities (上下文压缩 / 多智能体协作)
+  // Conversation capabilities (context compaction / multi-agent collaboration)
   readConversation?(): Promise<ConversationMessage[] | null>;
   newConversation?(): Promise<boolean>;
   readLastResponse?(): Promise<ResponsePayload | null>;
   waitForResponse?(timeoutMs: number): Promise<boolean>;
 
-  // 平台原生 token 数（如 AI Studio 的 ms-token-count）。返回 null 表示需由估算兜底。
+  // Platform-native token count (e.g. AI Studio ms-token-count). Return null to fall back to estimation.
   readNativeTokenCount?(): Promise<number | null>;
 
-  // 会话模式：读取/恢复当前平台会话模式（如 DeepSeek 快速/专家/识图）
+  // Conversation mode: read/restore the platform conversation mode (e.g. DeepSeek fast/expert/vision)
   getConversationMode?(): Promise<string | null>;
   setConversationMode?(mode: string): Promise<boolean>;
 

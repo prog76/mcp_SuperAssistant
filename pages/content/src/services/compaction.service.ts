@@ -1,12 +1,12 @@
 /**
- * 上下文压缩服务（核心编排）。
+ * Context compaction service (core orchestration).
  *
- * 流程（见 docs/context-compaction-design.md 第 4 节）：
- *   readConversation → token 估算 → 存档 transcript → 发送总结指令
- *   → waitForResponse → readLastResponse → 校验摘要 → 存档 summary
- *   → newConversation → insertText(续接指令 + <summary> + todo) → submitForm
+ * Flow (see docs/context-compaction-design.md section 4):
+ *   readConversation -> token estimate -> archive transcript -> send summarization prompt
+ *   -> waitForResponse -> readLastResponse -> validate summary -> archive summary
+ *   -> newConversation -> insertText(continuation instructions + <summary> + todos) -> submitForm
  *
- * 每步失败都有降级策略（不支持读取 / 空摘要截断 / 剪贴板兜底）。
+ * Every step has a fallback (read unsupported / truncate empty summary / clipboard fallback).
  */
 import { createLogger } from '@extension/shared/lib/logger';
 import { estimateTokens, truncateByTokens } from '../utils/tokenizer';
@@ -18,16 +18,16 @@ import type { AdapterPlugin, ConversationMessage, ResponsePayload } from '../plu
 
 const logger = createLogger('CompactionService');
 
-const DEFAULT_TARGET_TOKENS = 1200; // 摘要预算默认值（侧边栏可配 800~3000）
-const MIN_COMPACT_TOKENS = 500; // 对话极短不压缩
-const SUMMARY_WAIT_TIMEOUT_MS = 90_000; // 等待摘要生成
-const INSERT_MAX_RETRIES = 3; // insertText 重试次数
+const DEFAULT_TARGET_TOKENS = 1200; // default summary budget (configurable 800~3000 in the sidebar)
+const MIN_COMPACT_TOKENS = 500; // do not compact very short conversations
+const SUMMARY_WAIT_TIMEOUT_MS = 90_000; // wait for the summary to be generated
+const INSERT_MAX_RETRIES = 3; // insertText retry count
 
 export interface CompactionOptions {
-  targetTokens?: number; // 摘要预算，默认 1200
-  todoContext?: string; // 待续接任务状态（功能 2 的 todo 上下文）
-  carriedTodos?: string[]; // 压缩时携带的未完成 todo id
-  autoSend?: boolean; // 压缩后自动发送续接消息到新会话（缺省时读取 store 设置）
+  targetTokens?: number; // summary budget, default 1200
+  todoContext?: string; // pending task state to carry over (todo context)
+  carriedTodos?: string[]; // unfinished todo ids carried into the new conversation
+  autoSend?: boolean; // auto-send the continuation message to the new chat after compaction (falls back to store setting)
 }
 
 export type CompactFailReason = 'unsupported' | 'too_short' | 'no_adapter' | 'timeout' | 'failed';
@@ -38,7 +38,7 @@ export interface CompactResult {
   error?: string;
   compactionId?: string;
   summaryTokens?: number;
-  continuationMessage?: string; // 剪贴板兜底时返回完整续接消息
+  continuationMessage?: string; // full continuation message returned when falling back to clipboard
 }
 
 interface BoundAdapter {
@@ -63,22 +63,22 @@ export class CompactionService {
     return CompactionService.instance;
   }
 
-  private isSending = false; // 「发送到新会话」进行中标志（并发保护）
+  private isSending = false; // "send to new conversation" in-progress flag (concurrency guard)
 
   /**
-   * 执行一次上下文压缩。已在压缩中时拒绝并发。
+   * Run one context compaction. Rejects concurrent invocations.
    */
   public async compact(options: CompactionOptions = {}): Promise<CompactResult> {
     const store = () => useCompactionStore.getState();
     const targetTokens = this.clampTargetTokens(options.targetTokens);
 
     if (store().isCompacting) {
-      return { success: false, reason: 'failed', error: '已有压缩任务进行中' };
+      return { success: false, reason: 'failed', error: 'A compaction is already in progress' };
     }
 
     const adapter = this.getActiveAdapter();
     if (!adapter) {
-      return { success: false, reason: 'no_adapter', error: '未找到可用的平台适配器' };
+      return { success: false, reason: 'no_adapter', error: 'No platform adapter available' };
     }
 
     store().setCompacting(true);
@@ -99,73 +99,73 @@ export class CompactionService {
     };
 
     try {
-      // 1. 导出全文
+      // 1. Export the transcript
       const transcriptMessages = await adapter.readConversation();
       if (!transcriptMessages || transcriptMessages.length === 0) {
-        return this.fail('unsupported', '当前平台不支持读取对话，无法压缩', compactionId);
+        return this.fail('unsupported', 'Current platform does not support reading conversations; cannot compact', compactionId);
       }
       const transcript = transcriptMessages.map(m => `${m.role}: ${m.content}`).join('\n\n');
 
-      // 2. token 估算
+      // 2. Token estimation
       const tokenEstimate = estimateTokens(transcript);
       record.tokenEstimate = tokenEstimate;
 
-      // 极短对话拒绝
+      // reject extremely short conversations
       if (tokenEstimate.estimatedTokens < MIN_COMPACT_TOKENS) {
         return this.fail(
           'too_short',
-          `上下文尚短（约 ${tokenEstimate.estimatedTokens} tokens，低于 ${MIN_COMPACT_TOKENS}），无需压缩`,
+          `Conversation still short (~${tokenEstimate.estimatedTokens} tokens, below ${MIN_COMPACT_TOKENS}); nothing to compact`,
           compactionId,
         );
       }
 
-      // 3. 存档 transcript
+      // 3. Archive the transcript
       await saveArchive(record.transcriptPath, transcript);
       record.status = 'summarizing';
       await store().addRecord(record);
 
-      // 4. 发送总结指令
+      // 4. Send the summarization prompt
       const summaryPrompt = this.buildSummaryPrompt(targetTokens, options.todoContext);
       const promptSent = await this.insertWithRetry(adapter, summaryPrompt);
-      if (!promptSent) return this.fail('failed', '总结指令发送失败', compactionId);
+      if (!promptSent) return this.fail('failed', 'Failed to send summarization prompt', compactionId);
       const promptSubmitted = await adapter.submitForm();
-      if (!promptSubmitted) return this.fail('failed', '总结指令提交失败', compactionId);
+      if (!promptSubmitted) return this.fail('failed', 'Failed to submit summarization prompt', compactionId);
 
-      // 5. 等待并读取摘要
+      // 5. Wait for and read the summary
       const waited = await adapter.waitForResponse(SUMMARY_WAIT_TIMEOUT_MS);
-      if (!waited) return this.fail('timeout', '等待摘要生成超时', compactionId);
+      if (!waited) return this.fail('timeout', 'Timed out waiting for the summary', compactionId);
       const response = await adapter.readLastResponse();
 
-      // 6. 校验摘要（空 → 截断原文；超长 → 截断摘要）
+      // 6. Validate summary (empty -> truncate original; over budget -> truncate summary)
       let summary: string;
       if (!response || !response.text || response.text.trim().length === 0) {
-        logger.warn('[Compaction] 摘要生成为空，使用原文截断兜底');
+        logger.warn('[Compaction] Empty summary; falling back to truncated original');
         summary = truncateByTokens(transcript, targetTokens);
       } else {
         summary = this.validateSummary(response.text, targetTokens, transcript);
       }
       record.summaryTokens = estimateTokens(summary).estimatedTokens;
 
-      // 7. 存档 summary
+      // 7. Archive the summary
       await saveArchive(record.summaryPath, summary);
       record.status = 'done';
       await store().updateRecord(compactionId, { status: 'done', summaryTokens: record.summaryTokens });
 
-      // 自动发送：若开启「压缩后自动发送到新会话」，则直接进入第二步发送
+      // Auto-send: if enabled, go straight to step two and send to the new conversation
       const autoSend = options.autoSend ?? store().autoSend;
       if (autoSend) {
         const sent = await this.sendContinuation(compactionId);
         if (!sent.success) {
-          logger.warn('[Compaction] 自动发送续接消息失败（摘要已存档，可手动发送）:', sent.error);
+          logger.warn('[Compaction] Auto-send failed (summary archived; you can send manually):', sent.error);
         }
         return sent;
       }
 
-      logger.debug(`[Compaction] 压缩完成（摘要已存档待发送）: ${compactionId}`);
+      logger.debug(`[Compaction] Compaction complete (summary archived, awaiting send): ${compactionId}`);
       return { success: true, compactionId, summaryTokens: record.summaryTokens };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error('[Compaction] 压缩流程异常:', error);
+      logger.error('[Compaction] Compaction flow error:', error);
       await this.finish(compactionId, { success: false, reason: 'failed', error: message, compactionId });
       return { success: false, reason: 'failed', error: message, compactionId };
     } finally {
@@ -174,25 +174,25 @@ export class CompactionService {
   }
 
   /**
-   * 第二步：把已生成并存档的摘要发送到新会话（侧边栏「发送到新会话」触发）。
-   * 新建会话可能需要等待 AI Studio 保存流程完成，故等待时长由 newConversation 内部控制。
+   * Step two: send the generated/archived summary to a new conversation (triggered by sidebar "Send to new chat").
+   * Creating a conversation may need to wait for AI Studio save flows; timing is handled inside newConversation.
    */
   public async sendContinuation(compactionId: string): Promise<CompactResult> {
     const store = () => useCompactionStore.getState();
     if (this.isSending) {
-      return { success: false, reason: 'failed', error: '已有续接发送进行中' };
+      return { success: false, reason: 'failed', error: 'A continuation send is already in progress' };
     }
     const record = store().records.find(r => r.compactionId === compactionId);
     if (!record) {
-      return { success: false, reason: 'failed', error: '未找到该压缩记录' };
+      return { success: false, reason: 'failed', error: 'Compaction record not found' };
     }
     const summary = await store().getSummary(compactionId);
     if (!summary) {
-      return { success: false, reason: 'failed', error: '未找到摘要存档，无法发送' };
+      return { success: false, reason: 'failed', error: 'Summary archive missing; cannot send' };
     }
     const adapter = this.getActiveAdapter();
     if (!adapter) {
-      return { success: false, reason: 'no_adapter', error: '未找到可用的平台适配器' };
+      return { success: false, reason: 'no_adapter', error: 'No platform adapter available' };
     }
 
     this.isSending = true;
@@ -209,24 +209,24 @@ export class CompactionService {
       if (!newChat) {
         await this.copyToClipboard(continuation);
         await store().updateRecord(compactionId, { status: 'failed' });
-        return { success: false, reason: 'failed', error: '新建会话失败，续接消息已复制到剪贴板，请手动粘贴发送' };
+        return { success: false, reason: 'failed', error: 'Failed to create new conversation; continuation message copied to clipboard — paste and send manually' };
       }
 
-      await this.sleep(800); // 等待 SPA 切换后输入框就绪
+      await this.sleep(800); // wait for the input box after SPA navigation
       const inserted = await this.insertWithRetry(adapter, continuation);
       if (!inserted) {
         await this.copyToClipboard(continuation);
         await store().updateRecord(compactionId, { status: 'failed' });
-        return { success: false, reason: 'failed', error: '续接消息已复制到剪贴板，请手动粘贴发送' };
+        return { success: false, reason: 'failed', error: 'Continuation message copied to clipboard — paste and send manually' };
       }
 
       await adapter.submitForm();
       await store().updateRecord(compactionId, { status: 'sent', summaryTokens: record.summaryTokens });
-      logger.debug(`[Compaction] 续接消息已发送到新会话: ${compactionId}`);
+      logger.debug(`[Compaction] Continuation message sent to new conversation: ${compactionId}`);
       return { success: true, compactionId, summaryTokens: record.summaryTokens };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error('[Compaction] 发送续接消息异常:', error);
+      logger.error('[Compaction] Continuation send error:', error);
       return { success: false, reason: 'failed', error: message, compactionId };
     } finally {
       this.isSending = false;
@@ -234,7 +234,7 @@ export class CompactionService {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 内部工具                                                            */
+  /* Internal tools                                                       */
   /* ------------------------------------------------------------------ */
 
   private clampTargetTokens(value?: number): number {
@@ -267,18 +267,18 @@ export class CompactionService {
 
   private async insertWithRetry(adapter: BoundAdapter, text: string): Promise<boolean> {
     for (let attempt = 1; attempt <= INSERT_MAX_RETRIES; attempt++) {
-      // 直接 .value 赋值不同步 React，adapter 内部已用 execCommand/InputEvent；
-      // 此处仅对整体结果做重试。
+      // Direct .value assignment does not sync React; the adapter already uses execCommand/InputEvent,
+      // so we only retry on the overall result here.
       if (await adapter.insertText(text)) return true;
-      logger.warn(`[Compaction] insertText 第 ${attempt} 次失败，重试`);
+      logger.warn(`[Compaction] insertText attempt ${attempt} failed, retrying`);
       await this.sleep(300 * attempt);
     }
     return false;
   }
 
   /**
-   * 摘要校验：空/过短 → 截断原文兜底；超 50% 预算 → 截断摘要。
-   * 见设计文档第 7 节。
+   * Summary validation: empty/too short -> fall back to truncated original; over 50% budget -> truncate summary.
+   * See design doc section 7.
    */
   private validateSummary(raw: string, targetTokens: number, transcript: string): string {
     const est = estimateTokens(raw);
@@ -286,46 +286,46 @@ export class CompactionService {
     const tooShort = est.estimatedTokens < 50;
 
     if (tooShort || raw.trim().length === 0) {
-      logger.warn('[Compaction] 摘要为空/过短，使用原文截断兜底');
+      logger.warn('[Compaction] Summary empty/too short; falling back to truncated original');
       return truncateByTokens(transcript, targetTokens);
     }
     if (tooLong) {
-      logger.warn(`[Compaction] 摘要超预算（${est.estimatedTokens} > ${targetTokens * 1.5}），截断`);
+      logger.warn(`[Compaction] Summary over budget (${est.estimatedTokens} > ${targetTokens * 1.5}); truncating`);
       return truncateByTokens(raw, targetTokens);
     }
     return raw;
   }
 
   /**
-   * 总结指令（设计文档第 6 节）。明确禁止调用工具，避免 AI 跑去调 MCP。
+   * Summarization prompt (design doc section 6). Explicitly forbids tool calls so the AI does not invoke MCP.
    */
   private buildSummaryPrompt(targetTokens: number, todoContext?: string): string {
     const targetChars = Math.round(targetTokens * 0.9);
     return [
-      '你正在协助完成一次"上下文压缩"。请把当前对话压缩为一份结构化摘要，供新会话无缝接续。',
+      'You are assisting with a "context compaction". Compress the current conversation into a structured summary for seamless continuation in a new chat.',
       '',
-      '## 输出要求',
-      `1. 总长度控制在 ${targetTokens} tokens 以内（约 ${targetChars} 个中文字符）`,
-      '2. 使用以下 Markdown 结构，字段必须齐全：',
-      '   - ## 任务目标：原始任务要达成什么',
-      '   - ## 已完成：已完成的步骤与结论（保留关键数字/路径/命令）',
-      '   - ## 关键决策：重要取舍与原因',
-      '   - ## 未完成事项：按优先级列出，含下一步动作',
-      '   - ## 风险与注意事项：坑点、约束、平台风控点',
-      '   - ## 关键文件路径：涉及的所有路径清单',
-      '3. 代码块只保留"正在修改的核心片段"，完整代码请概述其作用即可',
-      '4. 不要客套，直接输出摘要正文，不要用 ``` 包裹整个输出',
-      '5. 严禁调用任何工具/函数（当前工具开关可能处于激活状态），只做纯文本总结',
+      '## Output requirements',
+      `1. Keep the total length within ${targetTokens} tokens (about ${targetChars} words)`,
+      '2. Use the following Markdown structure with all fields present:',
+      '   - ## Task goal: what the original task set out to achieve',
+      '   - ## Completed: finished steps and conclusions (keep key numbers/paths/commands)',
+      '   - ## Key decisions: important trade-offs and their reasons',
+      '   - ## Outstanding items: listed by priority, each with the next action',
+      '   - ## Risks and caveats: pitfalls, constraints, platform-specific risks',
+      '   - ## Key file paths: list of all involved paths',
+      '3. In code blocks keep only the core snippets being modified; briefly describe what full files do',
+      '4. No pleasantries — output only the summary body; do not wrap the whole output in ``` fences',
+      '5. Strictly do NOT call any tools/functions (tool toggles may be active); produce a plain-text summary only',
       '',
-      '## 待续接任务状态',
-      todoContext || '（无）',
+      '## Pending task state',
+      todoContext || '(none)',
     ].join('\n');
   }
 
   /**
-   * 续接首条消息模板（设计文档第 9 节）。
-   * 新会话首条消息 = 系统提示词（Instructions，如有）+ 续接指令 + 摘要 + todo + 存档索引，
-   * 使新会话自动化接管任务，无需手动复制。
+   * Continuation first-message template (design doc section 9).
+   * New-conversation first message = system prompt (Instructions, if any) + continuation instructions + summary + todos + archive index,
+   * letting the new conversation take over the task automatically, with no manual copying.
    */
   private buildContinuationMessage(
     summary: string,
@@ -337,13 +337,13 @@ export class CompactionService {
     const parts: string[] = [];
 
     if (systemInstructions) {
-      parts.push('[系统提示词（请作为你的设定遵循）]', systemInstructions, '');
+      parts.push('[System instructions (treat these as your operating rules)]', systemInstructions, '');
     }
 
     parts.push(
-      '[任务续接指令]',
-      '你正在接手一个已压缩的历史任务。请先阅读下方摘要，基于其中"未完成事项"继续执行。',
-      '不要重复摘要中"已完成"的工作；如摘要缺失关键信息，请先指出再行动。',
+      '[Task continuation instructions]',
+      'You are taking over a compacted historical task. Read the summary below and continue based on its "Outstanding items".',
+      'Do not repeat work already listed as completed; if the summary is missing key information, point it out before acting.',
       '',
       '<summary>',
       summary,
@@ -354,7 +354,7 @@ export class CompactionService {
       '</todo>',
       '',
       '<archive>',
-      `原文存档：compactions/${compactionId}/transcript.md（若你连接了文件系统工具可回查，否则以摘要为准）`,
+      `Original transcript archive: compactions/${compactionId}/transcript.md (consult it if you have filesystem tools; otherwise trust the summary)`,
       '</archive>',
     );
 
@@ -362,17 +362,17 @@ export class CompactionService {
   }
 
   /**
-   * 更新记录为失败，并同步到 store。
+   * Mark a record as failed and sync to the store.
    */
   private fail(reason: CompactFailReason, error: string, compactionId: string): CompactResult {
-    logger.warn(`[Compaction] 失败(${reason}): ${error}`);
+    logger.warn(`[Compaction] failed(${reason}): ${error}`);
     useCompactionStore.getState().updateRecord(compactionId, { status: 'failed' });
     useCompactionStore.getState().setError(error);
     return { success: false, reason, error, compactionId };
   }
 
   /**
-   * 更新记录为完成/失败状态（供压缩中途成功但需要兜底的路径使用）。
+   * Update a record to done/failed (used by paths where compaction partially succeeded but needs fallback).
    */
   private async finish(compactionId: string, result: CompactResult): Promise<void> {
     const status = result.success ? 'done' : 'failed';
@@ -388,10 +388,10 @@ export class CompactionService {
   private async copyToClipboard(text: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
-      logger.debug('[Compaction] 已复制到剪贴板');
+      logger.debug('[Compaction] Copied to clipboard');
     } catch (error) {
-      logger.error('[Compaction] 剪贴板写入失败:', error);
-      // 兜底：textarea + execCommand
+      logger.error('[Compaction] Clipboard write failed:', error);
+      // fallback: textarea + execCommand
       const textarea = document.createElement('textarea');
       textarea.value = text;
       textarea.style.position = 'fixed';

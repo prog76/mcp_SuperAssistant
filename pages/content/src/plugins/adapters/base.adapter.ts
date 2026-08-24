@@ -114,7 +114,7 @@ export abstract class BaseAdapterPlugin implements AdapterPlugin {
     return false;
   }
 
-  /** 平台原生 token 数，默认不提供（返回 null 走估算兜底）。 */
+  /** Platform-native token count; not provided by default (return null to fall back to estimation). */
   async readNativeTokenCount(): Promise<number | null> {
     return null;
   }

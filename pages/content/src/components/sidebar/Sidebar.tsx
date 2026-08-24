@@ -875,7 +875,7 @@ const Sidebar: React.FC<SidebarProps> = ({ initialPreferences }) => {
                         : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-t-lg',
                     )}
                     onClick={() => setActiveTab('compaction')}>
-                    压缩
+                    Compaction
                   </button>
                   <button
                     className={cn(

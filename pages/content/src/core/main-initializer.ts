@@ -250,7 +250,7 @@ export async function applicationInit(): Promise<void> {
     await initializeApplicationState();
     performanceMonitor.mark('app-state-initialized');
 
-    // 启动实时 token 监视器（adapter 已在 app-state 阶段激活）
+    // Start the real-time token watcher (adapter already activated in the app-state phase)
     try {
       tokenWatcher.start();
     } catch (error) {

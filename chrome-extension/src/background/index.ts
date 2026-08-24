@@ -678,7 +678,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   /* ------------------------------------------------------------------ */
-  /* 上下文压缩存档（扩展 origin IndexedDB）                              */
+  /* Context compaction archive (extension-origin IndexedDB)              */
   /* ------------------------------------------------------------------ */
   if (typeof message.type === 'string' && message.type.startsWith('compaction:')) {
     handleCompactionMessage(message, sendResponse);
@@ -691,7 +691,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 /**
- * 上下文压缩存档消息处理（transcript / summary 大文本读写扩展 origin 的 IndexedDB）。
+ * Compaction archive message handling (transcript/summary large-text read/write to extension-origin IndexedDB).
  */
 async function handleCompactionMessage(message: any, sendResponse: (response: any) => void) {
   try {

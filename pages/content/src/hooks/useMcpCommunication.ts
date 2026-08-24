@@ -64,7 +64,7 @@ export const useMcpCommunication = () => {
    * Enhanced tool calling with validation and error handling
    */
   const callTool = useCallback(async (toolName: string, args: Record<string, unknown>) => {
-    // 内置工具（InternalToolProvider）：不依赖 MCP 连接，直接本地执行
+    // Built-in tools (InternalToolProvider): no MCP connection needed — executed locally
     if (isInternalTool(toolName)) {
       return await executeInternalTool(toolName, args);
     }

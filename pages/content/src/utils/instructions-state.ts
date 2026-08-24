@@ -1,9 +1,9 @@
 /**
- * 系统提示词（Instructions）全局共享状态。
+ * Globally shared state for the system prompt (Instructions).
  *
- * InstructionManager 生成 instructions 后写入这里；mcpPopover、compaction.service 等
- * 非 React 模块也能读取当前系统提示词（如压缩新会话时携带）。
- * 独立成模块以避免从 React 组件导入引发的循环依赖。
+ * InstructionManager writes generated instructions here; non-React modules such as mcpPopover
+ * and compaction.service can read the current system prompt (e.g. to carry it into a compacted new conversation).
+ * Standalone module to avoid circular dependencies from React component imports.
  */
 import { createLogger } from '@extension/shared/lib/logger';
 

@@ -1,20 +1,20 @@
 /**
- * 实时 Token 监视服务（轮询采样 + 自动压缩触发）。
+ * Real-time token watcher service (polling sampler + auto-compaction trigger).
  *
- * 职责：
- *  1. 周期性（interval）读取当前激活 adapter 的会话内容，复用 compaction.service
- *     相同的 transcript 拼接逻辑，交给 estimateTokens 估算；
- *  2. 把结果写入 useTokenStore，供 UI 实时展示 token 消耗；
- *  3. 当用户开启自动压缩且估算 token 达到阈值时，自动触发 compactionService.compact()。
+ * Responsibilities:
+ *  1. Periodically reads the active adapter conversation, reusing the same transcript
+ *     joining logic as compaction.service, estimated via estimateTokens;
+ *  2. Writes results to useTokenStore for live token usage in the UI;
+ *  3. When auto-compact is enabled and estimated tokens reach the threshold, triggers compactionService.compact().
  *
- * 性能与安全（对应设计第 5.5 节）：
- *  - estimateTokens 为纯字符级 O(n)，数毫秒级，可放心轮询；
- *  - 主要开销在 adapter.readConversation()（全量 DOM 遍历），因此：
- *      - 页面隐藏时跳过采样；
- *      - 无 conversation-read 能力 / 无激活 adapter 时直接复位；
- *      - 采样异常一律静默降级，绝不阻塞主流程。
- *  - 自动触发带冷却与重武装：触发后需对话 token 降回阈值一半以下才允许再次触发，
- *    并在压缩进行中（isCompacting）放弃触发，避免与手动压缩并发 / 无限循环。
+ * Performance and safety (design doc section 5.5):
+ *  - estimateTokens is pure character-level O(n), a few ms — safe to poll;
+ *  - The main cost is adapter.readConversation() (full DOM traversal), therefore:
+ *      - skip sampling when the page is hidden;
+ *      - reset immediately when conversation-read capability / active adapter is missing;
+ *      - silently degrade on sampling errors; never block the main flow.
+ *  - Auto-trigger has cooldown + re-arm: after firing, tokens must fall below half the threshold to fire again,
+ *    and triggers are suppressed while compacting (isCompacting) to avoid concurrency / infinite loops.
  */
 import { createLogger } from '@extension/shared/lib/logger';
 import { estimateTokens } from '../utils/tokenizer';
@@ -26,15 +26,15 @@ import { compactionService } from './compaction.service';
 
 const logger = createLogger('TokenWatcherService');
 
-const POLL_INTERVAL_MS = 3_000; // 轮询周期
-const AUTO_TRIGGER_COOLDOWN_MS = 120_000; // 自动触发后的冷却时间（防抖动/防环路）
-const AUTO_TRIGGER_REARM_RATIO = 0.5; // 触发后须降回阈值该比例以下才重新武装
+const POLL_INTERVAL_MS = 3_000; // polling interval
+const AUTO_TRIGGER_COOLDOWN_MS = 120_000; // cooldown after an auto-trigger (anti-flapping / anti-loop)
+const AUTO_TRIGGER_REARM_RATIO = 0.5; // tokens must drop below this ratio of the threshold to re-arm
 
 export class TokenWatcherService {
   private static instance: TokenWatcherService | null = null;
 
   private timer: ReturnType<typeof setInterval> | null = null;
-  private armed = true; // 是否处于"可触发"状态（触发后需回落才重新武装）
+  private armed = true; // whether a trigger is allowed (must fall back below threshold to re-arm)
   private lastAutoTriggerAt = 0;
 
   private constructor() {}
@@ -46,27 +46,27 @@ export class TokenWatcherService {
     return TokenWatcherService.instance;
   }
 
-  /** 启动轮询（幂等）。须在 adapter 激活完成后调用。 */
+  /** Start polling (idempotent). Call after adapter activation completes. */
   public start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => void this.poll(), POLL_INTERVAL_MS);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     void this.poll();
-    logger.debug('[TokenWatcher] 已启动');
+    logger.debug('[TokenWatcher] started');
   }
 
-  /** 停止轮询（幂等）。 */
+  /** Stop polling (idempotent). */
   public stop(): void {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
-    logger.debug('[TokenWatcher] 已停止');
+    logger.debug('[TokenWatcher] stopped');
   }
 
   private handleVisibilityChange = (): void => {
-    // 重新可见时立即补一次采样，避免长时间隐藏后 UI 数据滞后
+    // sample immediately when visible again so the UI does not lag after long hidden periods
     if (!document.hidden) {
       void this.poll();
     }
@@ -82,13 +82,13 @@ export class TokenWatcherService {
       return;
     }
 
-    // 阈值实时从偏好读取，避免与设置面板/持久化之间出现双源漂移
+    // read the threshold live from preferences to avoid drift vs the settings panel / persistence
     const maxTokens = this.resolveMaxTokens();
     const store = useTokenStore.getState();
     store.setThreshold(maxTokens);
 
-    // 1) 平台原生 token 优先，不依赖 readConversation：
-    //    AI Studio 直接轮询 ms-token-count 元素，空会话也生效
+    // 1) Prefer platform-native token count, independent of readConversation:
+    //    AI Studio: poll the ms-token-count element directly; works even on empty conversations
     const native = await this.resolveNativeTokenCount(plugin);
     if (native !== null) {
       store.setCurrentTokens(native);
@@ -96,7 +96,7 @@ export class TokenWatcherService {
       return;
     }
 
-    // 2) 原生缺失 → 回落 readConversation + 字符估算
+    // 2) Native count missing -> fall back to readConversation + character estimation
     if (!plugin.capabilities.includes('conversation-read') || !plugin.readConversation) {
       useTokenStore.getState().reset();
       return;
@@ -113,12 +113,12 @@ export class TokenWatcherService {
 
       await this.maybeTrigger(estimate.estimatedTokens, maxTokens);
     } catch (error) {
-      logger.warn('[TokenWatcher] 采样会话失败（已降级）:', error);
+      logger.warn('[TokenWatcher] Conversation sampling failed (degraded):', error);
     }
   }
 
   /**
-   * 读取用户偏好的自动压缩阈值；老用户持久化中缺失该字段时取默认值。
+   * Read the auto-compact threshold from preferences; fall back to default for older persisted state.
    */
   private resolveMaxTokens(): number {
     const raw = useUIStore.getState().preferences.autoCompactMaxTokens;
@@ -127,8 +127,8 @@ export class TokenWatcherService {
   }
 
   /**
-   * 平台原生 token 数（如 AI Studio 的 ms-token-count）。实现不存在或
-   * 读不到时返回 null，由上层回落字符估算。
+   * Platform-native token count (e.g. AI Studio ms-token-count). Returns null when missing or
+   * unreadable; the caller falls back to character estimation.
    */
   private async resolveNativeTokenCount(plugin: any): Promise<number | null> {
     if (typeof plugin?.readNativeTokenCount === 'function') {
@@ -136,7 +136,7 @@ export class TokenWatcherService {
         const n = await plugin.readNativeTokenCount();
         return typeof n === 'number' && Number.isFinite(n) ? n : null;
       } catch (error) {
-        logger.warn('[TokenWatcher] 读取平台原生 token 失败（回落估算）:', error);
+        logger.warn('[TokenWatcher] Failed to read native token count (falling back to estimation):', error);
         return null;
       }
     }
@@ -146,32 +146,32 @@ export class TokenWatcherService {
   private async maybeTrigger(tokens: number, maxTokens: number): Promise<void> {
     const { autoCompactEnabled } = useUIStore.getState().preferences;
     if (!autoCompactEnabled) return;
-    if (useCompactionStore.getState().isCompacting) return; // 已有压缩进行中，防并发
+    if (useCompactionStore.getState().isCompacting) return; // compaction already in progress — prevent concurrency
 
     if (!this.armed) {
-      // 未武装：需等对话被压缩清空、token 明显回落后才允许再次触发
+      // Not armed: wait until the conversation is compacted/cleared and tokens drop before triggering again
       if (tokens < maxTokens * AUTO_TRIGGER_REARM_RATIO) {
         this.armed = true;
       }
       return;
     }
 
-    if (tokens < maxTokens) return; // 未达阈值
-    if (Date.now() - this.lastAutoTriggerAt < AUTO_TRIGGER_COOLDOWN_MS) return; // 冷却中
+    if (tokens < maxTokens) return; // below threshold
+    if (Date.now() - this.lastAutoTriggerAt < AUTO_TRIGGER_COOLDOWN_MS) return; // cooling down
 
     this.armed = false;
     this.lastAutoTriggerAt = Date.now();
-    logger.info(`[TokenWatcher] 触发自动压缩：约 ${tokens} tokens ≥ 阈值 ${maxTokens}`);
+    logger.info(`[TokenWatcher] Triggering auto-compaction: ~${tokens} tokens >= threshold ${maxTokens}`);
 
     compactionService
       .compact({})
       .then(result => {
         if (!result.success) {
-          logger.warn(`[TokenWatcher] 自动压缩未成功（${result.reason ?? 'unknown'}）: ${result.error ?? ''}`);
+          logger.warn(`[TokenWatcher] Auto-compaction unsuccessful (${result.reason ?? 'unknown'}): ${result.error ?? ''}`);
         }
       })
       .catch(error => {
-        logger.error('[TokenWatcher] 自动压缩调用异常:', error);
+        logger.error('[TokenWatcher] Auto-compaction call error:', error);
       });
   }
 }

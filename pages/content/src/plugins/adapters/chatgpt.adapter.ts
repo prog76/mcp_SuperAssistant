@@ -47,13 +47,13 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     BUTTON_INSERTION_CONTAINER: '[grid-area="leading"], .composer-leading-actions, [data-testid="composer-plus-btn"]',
     // Alternative insertion points
     FALLBACK_INSERTION: '.composer-parent, .relative.flex.w-full.items-end, [data-testid="composer-trailing-actions"]',
-    // 消息容器（实测：用户/助手消息均带 data-message-author-role）
+    // Message containers (verified: both user/assistant messages carry data-message-author-role)
     MESSAGE_USER: '[data-message-author-role="user"]',
     MESSAGE_ASSISTANT: '[data-message-author-role="assistant"]',
-    // 发送/停止是同一个 #composer-submit-button，空闲时 testid=send-button，
-    // 生成中切成 testid=stop-button（aria-label 亦随之切换）
+    // Send/stop are the same #composer-submit-button: idle testid=send-button,
+    // generating switches to testid=stop-button (aria-label switches accordingly)
     STOP_BUTTON: 'button[data-testid="stop-button"], #composer-submit-button[data-testid="stop-button"]',
-    // 新建会话按钮（侧边栏菜单项）
+    // New-chat button (sidebar menu item)
     NEW_CHAT_BUTTON: 'a[data-testid="create-new-chat-button"]'
   };
 
@@ -1473,17 +1473,17 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
   }
 
   // ---------------------------------------------------------------------
-  // Conversation capabilities (上下文压缩 / 会话读写)
-  // 选择器基于 chatgpt.com 实测（2026-08）：
-  //   - 消息容器 [data-message-author-role="user"|"assistant"]
-  //   - 发送/停止同一 #composer-submit-button，空闲 send-button / 生成中 stop-button
-  //   - 新建会话 a[data-testid="create-new-chat-button"]
+  // Conversation capabilities (context compaction / conversation read-write)
+  // Selectors verified against chatgpt.com (Aug 2026):
+  //   - message containers [data-message-author-role="user"|"assistant"]
+  //   - send/stop share #composer-submit-button: idle=send-button / generating=stop-button
+  //   - new chat via a[data-testid="create-new-chat-button"]
   // ---------------------------------------------------------------------
 
   /**
-   * 读取整段会话（含普通用户消息与助手消息）。
-   * 用户消息可能是 ChatGPT 原生回传的 <function_result> 工具结果（role=user），
-   * 这里如实返回其文本；压缩服务的 token 预算会在摘要阶段约束体量。
+   * Read the full conversation (both user and assistant messages).
+   * User messages may be native <function_result> tool results echoed by ChatGPT (role=user);
+   * their text is returned as-is; the compaction token budget constrains size at the summary stage.
    */
   async readConversation(): Promise<ConversationMessage[] | null> {
     this.context.logger.debug('Reading ChatGPT conversation');
@@ -1502,7 +1502,7 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     const collected: Element[] = [];
     const messages: ConversationMessage[] = [];
     all.forEach(el => {
-      // 跳过嵌套重复节点
+      // skip nested duplicate nodes
       if (collected.some(anc => anc.contains(el))) return;
       collected.push(el);
       messages.push({
@@ -1522,9 +1522,9 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
   }
 
   /**
-   * 新建会话：优先点击侧边栏“新建聊天”菜单项（SPA 无刷新），
-   * 找不到时兜底派发 ⌘/Ctrl+Shift+O 快捷键（chatgpt.com 新会话快捷键）。
-   * 不做整页导航，避免 content script 中断压缩流程 promise 链。
+   * New conversation: prefer clicking the sidebar "New chat" menu item (SPA, no reload),
+   * falling back to the ⌘/Ctrl+Shift+O shortcut (chatgpt.com new-chat hotkey).
+   * No full page navigation — that would break the content-script compaction promise chain.
    */
   async newConversation(): Promise<boolean> {
     this.context.logger.debug('Attempting to start a new ChatGPT conversation');
@@ -1546,7 +1546,7 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     return false;
   }
 
-  /** 判断当前是否为新会话（消息区无用户消息即视为空）。 */
+  /** Whether this is a fresh conversation (no user messages in the thread = empty). */
   private isFreshConversation(): boolean {
     try {
       return document.querySelectorAll(this.selectors.MESSAGE_USER).length === 0;
@@ -1555,7 +1555,7 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     }
   }
 
-  /** 查找“新建聊天”：优先 data-testid，再按文本（新聊天/New chat）兜底。 */
+  /** Find "New chat": prefer data-testid, fall back to text match (both locales). */
   private findNewChatButton(): HTMLElement | null {
     const byTestId = document.querySelector<HTMLElement>(this.selectors.NEW_CHAT_BUTTON);
     if (byTestId) return byTestId;
@@ -1569,7 +1569,7 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     );
   }
 
-  /** 派发 ⌘/Ctrl+Shift+O 新建会话快捷键。 */
+  /** Dispatch the ⌘/Ctrl+Shift+O new-chat hotkey. */
   private dispatchNewChatShortcut(): void {
     try {
       const input = document.querySelector<HTMLElement>(this.selectors.CHAT_INPUT.split(', ')[0].trim());
@@ -1594,7 +1594,7 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     }
   }
 
-  /** 读取最后一条助手回复（含文本与代码块）。 */
+  /** Read the last assistant reply (text and code blocks). */
   async readLastResponse(): Promise<ResponsePayload | null> {
     this.context.logger.debug('Reading last ChatGPT assistant response');
 
@@ -1619,9 +1619,9 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
   }
 
   /**
-   * 等待模型回复完成。
-   * 判定：先生成中（存在 stop-button），随后 stop-button 消失（切回 send-button）
-   * 且消息区 2s 无新增变更，两条件取二，避免在静止页面误判。
+   * Wait for model generation to complete.
+   * Detection: generation first (stop-button present), then stop-button disappears (back to send-button)
+   * and no DOM changes for 2s — either condition suffices, avoiding false positives on static pages.
    */
   async waitForResponse(timeoutMs: number = 60_000): Promise<boolean> {
     this.context.logger.debug(`Waiting for ChatGPT response (timeout ${timeoutMs}ms)`);
@@ -1659,7 +1659,7 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     }
   }
 
-  /** 从消息节点提取纯文本（innerText，兼顾代码块换行）。 */
+  /** Extract plain text from a message node (innerText, preserving code block line breaks). */
   private extractConversationText(element: HTMLElement): string {
     try {
       return (element.innerText || element.textContent || '').replace(/\n{3,}/g, '\n\n').trim();

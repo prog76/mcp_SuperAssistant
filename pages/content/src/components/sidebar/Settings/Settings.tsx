@@ -71,7 +71,7 @@ const Settings: React.FC = () => {
   const handleAutoCompactMaxTokens = (value: string) => {
     const parsed = parseInt(value, 10);
     if (Number.isNaN(parsed)) return;
-    // 夹取 2000~60000，与输入范围保持一致
+    // clamp to 2000~1000000, consistent with the input range
     updatePreferences({ autoCompactMaxTokens: Math.min(60_000, Math.max(2_000, parsed)) });
   };
 
@@ -226,22 +226,22 @@ const Settings: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* 上下文压缩 */}
+      {/* Context compaction */}
       <Card className="border-slate-200 dark:border-slate-700 dark:bg-slate-800">
         <CardContent className="p-4 space-y-3">
           <Typography variant="h4" className="text-slate-700 dark:text-slate-300">
-            上下文压缩
+            Context Compaction
           </Typography>
 
           <div className="flex items-center justify-between">
-            <span className="text-sm text-slate-700 dark:text-slate-300">自动压缩</span>
+            <span className="text-sm text-slate-700 dark:text-slate-300">Auto-compact</span>
             <Toggle
               enabled={preferences.autoCompactEnabled ?? false}
               onChange={handleAutoCompactToggle}
             />
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            当前对话估算 token 达到阈值时自动触发压缩（需平台支持读取对话）
+            Automatically compact when the estimated conversation token count reaches the threshold (requires platform conversation-read support)
           </p>
 
           <div className="space-y-1">
@@ -249,7 +249,7 @@ const Settings: React.FC = () => {
               htmlFor="auto-compact-max-tokens"
               className="block text-sm font-medium text-slate-700 dark:text-slate-300"
             >
-              自动触发最大 Token 数
+              Auto-trigger max tokens
             </label>
             <input
               id="auto-compact-max-tokens"
@@ -269,7 +269,7 @@ const Settings: React.FC = () => {
               )}
             />
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              当前对话估算 token 达到该值时自动触发压缩（下限 2000，默认 512000，无上限限制）
+              Auto-compact when the estimated conversation tokens reach this value (min 2000, default 512000, no upper limit)
             </p>
           </div>
         </CardContent>

@@ -1,8 +1,8 @@
 /**
- * 上下文压缩存档存储。
- * - 索引（CompactionRecord）→ chrome.storage.local
- * - 大文本（transcript / summary）→ 经 background 路由到扩展 origin 的 IndexedDB
- *   （content script 的 IndexedDB 与页面同源，不能直接用于敏感全文存档）
+ * Context compaction archive storage.
+ * - Index (CompactionRecord) -> chrome.storage.local
+ * - Large text (transcript / summary) -> routed via background to extension-origin IndexedDB
+ *   (the content script IndexedDB shares the page origin and must not hold sensitive full-text archives)
  */
 import { createLogger } from '@extension/shared/lib/logger';
 import type { TokenEstimate } from './tokenizer';
@@ -12,23 +12,23 @@ const logger = createLogger('CompactionStorage');
 const RECORDS_KEY = 'mcp_compactions';
 
 /**
- * 压缩记录索引（见设计文档 8.1 节）。
+ * Compaction record index (see design doc section 8.1).
  */
 export interface CompactionRecord {
   compactionId: string; // `comp_${ts}_${rand}`
   createdAt: number;
   sourceAdapter: string;
   sourceUrl: string;
-  transcriptPath: string; // IndexedDB key，如 `transcript_${compactionId}`
+  transcriptPath: string; // IndexedDB key, e.g. `transcript_${compactionId}`
   summaryPath: string; // IndexedDB key
-  tokenEstimate: TokenEstimate; // 压缩前对话的 token 估算
-  summaryTokens: number; // 摘要 token 估算
-  carriedTodos: string[]; // 未完成 todo id
-  status: 'pending' | 'summarizing' | 'done' | 'failed' | 'sent'; // done=摘要已生成待发送；sent=已发送到新会话
+  tokenEstimate: TokenEstimate; // token estimate of the conversation before compaction
+  summaryTokens: number; // token estimate of the summary
+  carriedTodos: string[]; // ids of unfinished todos
+  status: 'pending' | 'summarizing' | 'done' | 'failed' | 'sent'; // done=summary generated awaiting send; sent=delivered to new conversation
 }
 
 /* ------------------------------------------------------------------ */
-/* 索引：chrome.storage.local                                          */
+/* Index: chrome.storage.local                                         */
 /* ------------------------------------------------------------------ */
 
 export async function listCompactionRecords(): Promise<CompactionRecord[]> {
@@ -81,11 +81,11 @@ export async function deleteCompactionRecord(compactionId: string): Promise<void
 }
 
 /* ------------------------------------------------------------------ */
-/* 大文本存档：经 background → 扩展 origin IndexedDB                   */
+/* Large-text archive: background -> extension-origin IndexedDB        */
 /* ------------------------------------------------------------------ */
 
 /**
- * 写入一条大文本存档。走 background 消息通道，失败返回 false。
+ * Write one large-text archive entry. Goes through the background message channel; returns false on failure.
  */
 export async function saveArchive(id: string, content: string): Promise<boolean> {
   try {
@@ -101,7 +101,7 @@ export async function saveArchive(id: string, content: string): Promise<boolean>
 }
 
 /**
- * 读取一条大文本存档；不存在返回 null。
+ * Read one large-text archive entry; returns null when missing.
  */
 export async function loadArchive(id: string): Promise<string | null> {
   try {
