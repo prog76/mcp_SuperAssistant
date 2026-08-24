@@ -121,6 +121,8 @@ export type McpMessageType =
   | 'mcp:call-tool'
   | 'mcp:get-connection-status'
   | 'mcp:get-tools'
+  | 'mcp:get-prompts'
+  | 'mcp:get-prompt'
   | 'mcp:force-reconnect'
   | 'mcp:get-server-config'
   | 'mcp:update-server-config'

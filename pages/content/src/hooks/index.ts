@@ -59,6 +59,9 @@ export {
 // Utility hooks (re-export existing ones)
 export { useShadowDomStyles } from './useShadowDomStyles';
 
+// MCP communication hook
+export { useMcpCommunication } from './useMcpCommunication';
+
 // Sidebar plugin hooks
 export {
   useSidebarPlugin,
