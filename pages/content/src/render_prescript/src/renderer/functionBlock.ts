@@ -1408,7 +1408,7 @@ export const renderFunctionCall = (block: HTMLPreElement, isProcessingRef: { cur
       let dupFound = false;
       document.querySelectorAll('.function-block:not(.function-result-container)').forEach(b => {
         const cidEl = b.querySelector('.call-id');
-        if (cidEl && cidEl.textContent === String(thisCallId) && b.offsetParent !== null) {
+        if (cidEl && cidEl.textContent === String(thisCallId) && (b as HTMLElement).offsetParent !== null) {
           dupFound = true;
         }
       });

@@ -25,6 +25,7 @@ const getZustandPreferences = (): UserPreferences => {
     autoInsertDelay: 500,
     autoSubmitDelay: 1000,
     autoExecuteDelay: 500,
+    autoSubmitIterationTimeout: 60,
     notifications: true,
     theme: 'system',
     language: navigator.language || 'en-US',
