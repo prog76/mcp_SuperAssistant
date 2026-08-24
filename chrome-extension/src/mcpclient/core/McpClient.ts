@@ -401,6 +401,10 @@ export class McpClient extends EventEmitter<AllEvents> {
 
     logger.debug(`[McpClient] Getting prompt: ${name}`);
 
+    if (typeof this.activePlugin.getPrompt !== 'function') {
+      throw new Error('Active transport plugin does not support prompts');
+    }
+
     try {
       const result = await this.activePlugin.getPrompt(this.client, name, args);
       logger.debug(`[McpClient] Prompt retrieved: ${name}`);
