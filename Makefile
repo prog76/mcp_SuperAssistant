@@ -135,6 +135,12 @@ release-prep: build build-firefox zip
 	$(MAKE) gen-update
 	@echo "$(GREEN)All artifacts ready in ./dist-zip$(NC)"
 
+# Bump version, commit, tag and push (triggers the release workflow).
+# Usage: make release [BUMP=patch|minor|major]  (default: patch)
+release:
+	@echo "$(GREEN)Running release ($(BUMP))...$(NC)"
+	@bash bash-scripts/release.sh $(BUMP)
+
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
 ## Help
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
@@ -160,6 +166,7 @@ help:
 	@echo "  prettier       Format code with Prettier"
 	@echo "  set-env        Set global environment variables"
 	@echo "  release-prep   Full release prep (build + zip + crx + update.xml)"
+	@echo "  release        Bump version, tag and push (BUMP=patch|minor|major, default: patch)"
 	@echo "  pack-crx       Pack Chrome CRX locally"
 	@echo "  gen-update     Generate update.xml locally"
 	@echo ""
