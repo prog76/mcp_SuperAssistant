@@ -23,7 +23,7 @@ const manifest = {
   name: 'MCP SuperAssistant',
   browser_specific_settings: {
     gecko: {
-      id: 'saurabh@mcpsuperassistant.ai',
+      id: 'prog76@mcpsuperassistant.ai',
     },
   },
   version: packageJson.version,

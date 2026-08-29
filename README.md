@@ -19,8 +19,8 @@ Brings MCP to ChatGPT, Perplexity, Grok, Gemini, Google AI Studio, OpenRouter, K
 
 <div align="center">
    
-   ![Latest Release](https://img.shields.io/github/v/release/srbhptl39/MCP-SuperAssistant?style=flat-square&label=Latest%20Release&color=brightgreen)
-   ![GitHub Stars](https://img.shields.io/github/stars/srbhptl39/MCP-SuperAssistant?style=flat-square&label=Stars)
+   ![Latest Release](https://img.shields.io/github/v/release/prog76/mcp_SuperAssistant?style=flat-square&label=Latest%20Release&color=brightgreen)
+   ![GitHub Stars](https://img.shields.io/github/stars/prog76/mcp_SuperAssistant?style=flat-square&label=Stars)
    ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)
    ![Chrome Users](https://img.shields.io/chrome-web-store/users/kngiafgkdnlkgmefdafaibkibegkcaef?style=flat-square&label=Chrome%20Users)
    ![Firefox Users](https://img.shields.io/amo/users/mcp-superassistant?style=flat-square&label=Firefox%20Users)
@@ -248,7 +248,7 @@ In such cases, use better models which are meant for tool calling or have better
 ### Manual Installation (Development)
 
 #### Release Version
-1. Download the latest release from [Releases](https://github.com/srbhptl39/MCP-SuperAssistant/releases)
+1. Download the latest release from [Releases](https://github.com/prog76/mcp_SuperAssistant/releases)
 2. Unzip the downloaded file
 3. Navigate to `chrome://extensions/` in Chrome
 4. Enable "Developer mode"
@@ -260,16 +260,16 @@ In such cases, use better models which are meant for tool calling or have better
 For enterprise or advanced deployments, the extension supports automatic updates via a Chrome Enterprise policy. This allows IT administrators to deploy the extension with a fixed update URL.
 
 **Update Mechanism:**
-- Chrome Enterprise users can install the extension using a policy that points to `https://srbhptl39.github.io/MCP-SuperAssistant/update.xml`
+- Chrome Enterprise users can install the extension using a policy that points to `https://prog76.github.io/mcp_SuperAssistant/update.xml`
 - Chrome polls this URL every ~5 hours for new versions
 - When a new version is published to GitHub Releases, users automatically receive the update
 
 **How to Install via Enterprise Policy:**
 
-1. Download the latest `.crx` file from [GitHub Releases](https://github.com/srbhptl39/MCP-SuperAssistant/releases)
+1. Download the latest `.crx` file from [GitHub Releases](https://github.com/prog76/mcp_SuperAssistant/releases)
 2. Set the following Chrome policies (via `chrome://policy` or GPO/Mobile Device Management):
    - `ExtensionInstallForcelist`: Add the extension ID (will be displayed in release notes)
-   - `ExtensionInstallUpdateUrl`: Set to `https://srbhptl39.github.io/MCP-SuperAssistant/update.xml`
+   - `ExtensionInstallUpdateUrl`: Set to `https://prog76.github.io/mcp_SuperAssistant/update.xml`
 3. The extension will auto-install and auto-update from the GitHub Releases URL
 
 **For End Users:**
@@ -363,4 +363,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=srbhptl39/MCP-SuperAssistant&type=Date)](https://www.star-history.com/#srbhptl39/MCP-SuperAssistant&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=prog76/mcp_SuperAssistant&type=Date)](https://www.star-history.com/#prog76/mcp_SuperAssistant&Date)
