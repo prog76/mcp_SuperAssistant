@@ -253,7 +253,27 @@ In such cases, use better models which are meant for tool calling or have better
 3. Navigate to `chrome://extensions/` in Chrome
 4. Enable "Developer mode"
 5. Click "Load unpacked" and select the unzipped directory
-6. Follow [Connecting to Local Proxy Server](#connecting-to-local-proxy-server) to connect to your MCP server
+ 6. Follow [Connecting to Local Proxy Server](#connecting-to-local-proxy-server) to connect to your MCP server
+
+### Chrome Enterprise Deployment (Auto-Updates)
+
+For enterprise or advanced deployments, the extension supports automatic updates via a Chrome Enterprise policy. This allows IT administrators to deploy the extension with a fixed update URL.
+
+**Update Mechanism:**
+- Chrome Enterprise users can install the extension using a policy that points to `https://srbhptl39.github.io/MCP-SuperAssistant/update.xml`
+- Chrome polls this URL every ~5 hours for new versions
+- When a new version is published to GitHub Releases, users automatically receive the update
+
+**How to Install via Enterprise Policy:**
+
+1. Download the latest `.crx` file from [GitHub Releases](https://github.com/srbhptl39/MCP-SuperAssistant/releases)
+2. Set the following Chrome policies (via `chrome://policy` or GPO/Mobile Device Management):
+   - `ExtensionInstallForcelist`: Add the extension ID (will be displayed in release notes)
+   - `ExtensionInstallUpdateUrl`: Set to `https://srbhptl39.github.io/MCP-SuperAssistant/update.xml`
+3. The extension will auto-install and auto-update from the GitHub Releases URL
+
+**For End Users:**
+- Alternatively, you can manually install the `.crx` file by dragging it onto `chrome://extensions/`
 
 ## Development
 

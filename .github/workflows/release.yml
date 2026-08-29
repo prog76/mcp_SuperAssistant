@@ -11,11 +11,12 @@ on:
         required: true
         type: string
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   release:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -46,22 +47,103 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Build extension
+      # ---------- BUILD & ZIP CHROME ----------
+      - name: Build for Chrome
         run: pnpm build
 
-      - name: Create ZIP package
-        run: pnpm zip
+      - name: Create Chrome ZIP
+        run: pnpm -F zipper zip
 
-      - name: Upload Release Artifact
-        uses: actions/upload-artifact@v7
+      - name: Copy Chrome ZIP to fixed name
+        run: |
+          cd dist-zip
+          CHROME_ZIP=$(ls -t extension-*.zip | head -1)
+          cp "$CHROME_ZIP" extension.zip
+          echo "Chrome ZIP: $CHROME_ZIP"
+
+      # ---------- BUILD & SIGN FIREFOX ----------
+      - name: Build for Firefox
+        run: pnpm build:firefox
+
+      - name: Sign Firefox XPI (Unlisted)
+        env:
+          AMO_API_KEY: ${{ secrets.AMO_API_KEY }}
+          AMO_API_SECRET: ${{ secrets.AMO_API_SECRET }}
+        run: |
+          npx web-ext sign \
+            --channel=unlisted \
+            --api-key="$AMO_API_KEY" \
+            --api-secret="$AMO_API_SECRET" \
+            --source-dir=./dist \
+            --artifacts-dir=./dist-zip
+
+      - name: Rename signed Firefox XPI
+        run: |
+          cd dist-zip
+          # web-ext names the signed file like mcp-superassistant-{version}-an.xpi
+          SIGNED_XPI=$(ls -t *xpi 2>/dev/null | head -1)
+          if [ -n "$SIGNED_XPI" ]; then
+            cp "$SIGNED_XPI" extension-firefox.xpi
+            echo "Renamed $SIGNED_XPI to extension-firefox.xpi"
+          else
+            echo "Warning: No signed XPI found in dist-zip/"
+            ls -la
+          fi
+
+      # ---------- PACK CHROME .CRX ----------
+      - name: Pack Chrome CRX
+        env:
+          CHROME_PEM_KEY: ${{ secrets.CHROME_PEM_KEY }}
+          ZIP_PATH: ./dist-zip/extension.zip
+          OUTPUT_DIR: ./dist-zip
+        run: node .github/scripts/generate-crx.js
+
+      # ---------- DERIVE & SAVE CHROME APP ID ----------
+      - name: Derive Chrome App ID
+        id: chrome_id
+        env:
+          CHROME_PEM_KEY: ${{ secrets.CHROME_PEM_KEY }}
+        run: |
+          APP_ID=$(node .github/scripts/get-chrome-app-id.js)
+          echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
+          echo "Derived App ID: $APP_ID"
+
+      # ---------- GENERATE UPDATE.XML ----------
+      - name: Generate update.xml
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CHROME_APP_ID: ${{ steps.chrome_id.outputs.app_id }}
+          OUTPUT_DIR: ./dist-zip
+        run: node .github/scripts/generate-update-xml.js
+
+      # ---------- DEPLOY UPDATE.XML TO GITHUB PAGES ----------
+      - name: Create temp dir for GitHub Pages
+        run: rm -rf ./gh-pages-temp
+
+      - name: Deploy update.xml to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          name: extension-zip
-          path: ./dist-zip/*.zip
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist-zip
+          publish_branch: gh-pages
+          allow_empty_commit: false
+          keep_files: false
+          destination_dir: .
+          force_orphan: true
+          git_config_name: 'github-actions[bot]'
+          git_config_email: 'github-actions[bot]@users.noreply.github.com'
+          exclude_assets: '*.zip,*.crx,*.xpi,extension-*'
 
+      # ---------- CREATE GITHUB RELEASE ----------
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ./dist-zip/*.zip
+          files: |
+            ./dist-zip/extension.zip
+            ./dist-zip/extension-firefox.xpi
+            ./dist-zip/extension.crx
+            ./dist-zip/update.xml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

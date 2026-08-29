@@ -115,6 +115,26 @@ set-env:
 	@echo "$(GREEN)Setting global environment variables...$(NC)"
 	pnpm set-global-env
 
+## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
+## Release Targets
+## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
+
+# Pack Chrome CRX locally
+pack-crx: check-deps
+	@echo "$(GREEN)Packing Chrome CRX...$(NC)"
+	CHROME_PEM_KEY="$(CHROME_PEM_KEY)" node .github/scripts/generate-crx.js
+
+# Generate update.xml locally
+gen-update:
+	@echo "$(GREEN)Generating update.xml...$(NC)"
+	RELEASE_VERSION="$(VERSION)" GITHUB_REPOSITORY="$(REPO)" CHROME_APP_ID="$(APP_ID)" node .github/scripts/generate-update-xml.js
+
+# Full release prep (build + zip + crx + update.xml)
+release-prep: build build-firefox zip
+	$(MAKE) pack-crx
+	$(MAKE) gen-update
+	@echo "$(GREEN)All artifacts ready in ./dist-zip$(NC)"
+
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
 ## Help
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
@@ -139,4 +159,7 @@ help:
 	@echo "  lint-fix       Fix ESLint issues"
 	@echo "  prettier       Format code with Prettier"
 	@echo "  set-env        Set global environment variables"
+	@echo "  release-prep   Full release prep (build + zip + crx + update.xml)"
+	@echo "  pack-crx       Pack Chrome CRX locally"
+	@echo "  gen-update     Generate update.xml locally"
 	@echo ""
