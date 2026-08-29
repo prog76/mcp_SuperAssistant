@@ -276,8 +276,8 @@ const processChunkImmediate = (
   if (!chunkInfo.hasNewChunk || !chunkInfo.isSignificant) return;
 
   // Find target element immediately
-  // 原实现硬编码 div[data-block-id]，但目标元素可能是 <p>（ChatGPT）等；
-  // 用 monitorNode 写入的 data-monitored-node 精确定位原始元素。
+  // The old code hardcoded div[data-block-id], but the target may be a <p> (ChatGPT) etc.;
+  // locate the original element precisely via data-monitored-node written by monitorNode.
   const target = document.querySelector(`[data-monitored-node="${blockId}"]`) as HTMLElement;
   if (!target) return;
 
@@ -620,16 +620,16 @@ export const monitorNode = (node: HTMLElement, blockId: string): void => {
         abruptlyEndedStreams.delete(blockId);
       }
 
-      // Find the nearest element that matches a target selector. targetSelectors 里可能是
-      // 纯标签（'pre'/'code'），也可能是复杂 CSS 选择器（如 '[data-message-author-role="assistant"] p'），
-      // 必须用 el.matches() 判断，不能用 tagName 精确匹配（tagName 只对纯标签有效）。
+      // Find the nearest element that matches a target selector. Entries may be plain tags
+      // ('pre'/'code') or complex CSS selectors (e.g. '[data-message-author-role="assistant"] p'),
+      // so matching must use el.matches(), not exact tagName comparison (which only works for plain tags).
       let target = node;
       while (target) {
         if (CONFIG.targetSelectors.some(sel => {
           try {
             return target.matches(sel);
           } catch {
-            return false; // 非法/部分选择器
+            return false; // invalid/partial selector
           }
         })) break;
         target = target.parentElement as HTMLElement;
@@ -775,8 +775,8 @@ export const resyncWithOriginalContent = (blockId: string): void => {
   resyncingBlocks.add(blockId);
 
   // Find the original element containing raw content
-  // 用 data-monitored-node 精确定位原始元素，避免硬编码 div[data-block-id]
-  // 把渲染后的 .function-block（div）误当成原始内容节点（ChatGPT 上是 <p>）。
+  // Locate the original element precisely via data-monitored-node instead of hardcoded div[data-block-id]
+  // which could mistake the rendered .function-block (div) for the original content node (a <p> on ChatGPT).
   const originalPre = document.querySelector(`[data-monitored-node="${blockId}"]`);
   if (!originalPre || !originalPre.textContent) {
     if (CONFIG.debug) {

@@ -3,10 +3,19 @@ import { devtools } from 'zustand/middleware';
 import { eventBus } from '../events';
 import { getToolEnablementState, saveToolEnablementState } from '../utils/storage';
 import type { Tool, DetectedTool, ToolExecution } from '../types/stores';
+import { getInternalTools } from '../utils/internal-tools';
 import { createLogger } from '@extension/shared/lib/logger';
 
 
 const logger = createLogger('useToolStore');
+
+// Merge built-in extension tools (InternalToolProvider): drop external tools with clashing names, then append built-ins.
+const mergeWithInternalTools = (tools: Tool[]): Tool[] => {
+  const internal = getInternalTools();
+  const internalNames = new Set(internal.map(t => t.name));
+  const external = tools.filter(t => !internalNames.has(t.name));
+  return [...external, ...internal];
+};
 
 export interface ToolState {
   availableTools: Tool[];
@@ -36,7 +45,8 @@ export interface ToolState {
 }
 
 const initialState: Omit<ToolState, 'setAvailableTools' | 'addDetectedTool' | 'clearDetectedTools' | 'startToolExecution' | 'updateToolExecution' | 'completeToolExecution' | 'getToolExecution' | 'enableTool' | 'disableTool' | 'enableAllTools' | 'disableAllTools' | 'isToolEnabled' | 'loadToolEnablementState'> = {
-  availableTools: [],
+  // Built-in tools (InternalToolProvider) are always visible and executable without an MCP connection
+  availableTools: getInternalTools(),
   detectedTools: [],
   toolExecutions: {},
   isExecuting: false,
@@ -51,9 +61,11 @@ export const useToolStore = create<ToolState>()(
       ...initialState,
 
       setAvailableTools: (tools: Tool[]) => {
-        set({ availableTools: tools });
-        logger.debug('[ToolStore] Available tools updated:', tools);
-        eventBus.emit('tool:list-updated', { tools });
+        // Merge built-in extension tools (InternalToolProvider)
+        const merged = mergeWithInternalTools(tools);
+        set({ availableTools: merged });
+        logger.debug('[ToolStore] Available tools updated:', merged);
+        eventBus.emit('tool:list-updated', { tools: merged });
         
         // Load tool enablement state from storage
         get().loadToolEnablementState();

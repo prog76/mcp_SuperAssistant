@@ -27,6 +27,8 @@ export interface Tool {
   schema?: any;
   // Newer field preferred going forward
   input_schema: any; // Keeping 'any' as per original spec, can be refined later
+  // Mark as an extension built-in tool (InternalToolProvider)
+  internal?: boolean;
 }
 
 export interface DetectedTool {
@@ -69,6 +71,9 @@ export interface UserPreferences {
   isMinimized: boolean;
   customInstructions: string;
   customInstructionsEnabled: boolean;
+  // Auto context compaction: triggers compactionService.compact() when the estimated tokens reach autoCompactMaxTokens
+  autoCompactEnabled: boolean;
+  autoCompactMaxTokens: number; // default 12000, allowed range 2000~60000
 }
 
 export interface Notification {

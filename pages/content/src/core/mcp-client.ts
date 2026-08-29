@@ -4,6 +4,7 @@ import { useToolStore } from '../stores/tool.store';
 import { eventBus } from '../events/event-bus';
 import type { ServerConfig, ConnectionStatus } from '../types/stores';
 import { logMessage } from '../utils/helpers';
+import { isInternalTool, executeInternalTool } from '../utils/internal-tools';
 import { pluginRegistry } from '../plugins';
 
 /**
@@ -365,6 +366,11 @@ class McpClient {
    * Call a tool on the MCP server with enhanced error handling and validation
    */
   async callTool(toolName: string, args: Record<string, unknown>): Promise<any> {
+    // Built-in tools (InternalToolProvider): no MCP connection needed — executed locally
+    if (isInternalTool(toolName)) {
+      return await executeInternalTool(toolName, args);
+    }
+
     if (!this.isInitialized) {
       throw new Error('McpClient not initialized');
     }

@@ -1,5 +1,5 @@
 import { BaseAdapterPlugin } from './base.adapter';
-import type { AdapterCapability, PluginContext } from '../plugin-types';
+import type { AdapterCapability, PluginContext, ConversationMessage, ResponsePayload } from '../plugin-types';
 import { createLogger } from '@extension/shared/lib/logger';
 
 /**
@@ -22,7 +22,9 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     'text-insertion',
     'form-submission',
     'file-attachment',
-    'dom-manipulation'
+    'dom-manipulation',
+    'conversation-read',
+    'conversation-create'
   ];
 
   // CSS selectors for ChatGPT's UI elements
@@ -44,7 +46,15 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     // Button insertion points (for MCP popover) - targeting leading area next to plus button
     BUTTON_INSERTION_CONTAINER: '[grid-area="leading"], .composer-leading-actions, [data-testid="composer-plus-btn"]',
     // Alternative insertion points
-    FALLBACK_INSERTION: '.composer-parent, .relative.flex.w-full.items-end, [data-testid="composer-trailing-actions"]'
+    FALLBACK_INSERTION: '.composer-parent, .relative.flex.w-full.items-end, [data-testid="composer-trailing-actions"]',
+    // Message containers (verified: both user/assistant messages carry data-message-author-role)
+    MESSAGE_USER: '[data-message-author-role="user"]',
+    MESSAGE_ASSISTANT: '[data-message-author-role="assistant"]',
+    // Send/stop are the same #composer-submit-button: idle testid=send-button,
+    // generating switches to testid=stop-button (aria-label switches accordingly)
+    STOP_BUTTON: 'button[data-testid="stop-button"], #composer-submit-button[data-testid="stop-button"]',
+    // New-chat button (sidebar menu item)
+    NEW_CHAT_BUTTON: 'a[data-testid="create-new-chat-button"]'
   };
 
   // URL patterns for navigation tracking
@@ -1460,5 +1470,205 @@ export class ChatGPTAdapter extends BaseAdapterPlugin {
     tools.forEach(tool => {
       this.context.stores.tool?.addDetectedTool?.(tool);
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Conversation capabilities (context compaction / conversation read-write)
+  // Selectors verified against chatgpt.com (Aug 2026):
+  //   - message containers [data-message-author-role="user"|"assistant"]
+  //   - send/stop share #composer-submit-button: idle=send-button / generating=stop-button
+  //   - new chat via a[data-testid="create-new-chat-button"]
+  // ---------------------------------------------------------------------
+
+  /**
+   * Read the full conversation (both user and assistant messages).
+   * User messages may be native <function_result> tool results echoed by ChatGPT (role=user);
+   * their text is returned as-is; the compaction token budget constrains size at the summary stage.
+   */
+  async readConversation(): Promise<ConversationMessage[] | null> {
+    this.context.logger.debug('Reading ChatGPT conversation');
+
+    const userEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_USER));
+    const assistantEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_ASSISTANT));
+    if (userEls.length === 0 && assistantEls.length === 0) {
+      this.context.logger.warn('No conversation messages found on ChatGPT page');
+      return null;
+    }
+
+    const all = document.querySelectorAll<HTMLElement>(
+      `${this.selectors.MESSAGE_USER}, ${this.selectors.MESSAGE_ASSISTANT}`
+    );
+
+    const collected: Element[] = [];
+    const messages: ConversationMessage[] = [];
+    all.forEach(el => {
+      // skip nested duplicate nodes
+      if (collected.some(anc => anc.contains(el))) return;
+      collected.push(el);
+      messages.push({
+        role: el.matches(this.selectors.MESSAGE_USER) ? 'user' : 'assistant',
+        content: this.extractConversationText(el),
+        timestamp: Date.now(),
+        messageId: el.getAttribute('data-message-id') || undefined
+      });
+    });
+
+    if (messages.length === 0) {
+      this.context.logger.warn('ChatGPT conversation parsed to zero messages');
+      return null;
+    }
+    this.context.logger.debug(`Read ${messages.length} messages from ChatGPT conversation`);
+    return messages;
+  }
+
+  /**
+   * New conversation: prefer clicking the sidebar "New chat" menu item (SPA, no reload),
+   * falling back to the ⌘/Ctrl+Shift+O shortcut (chatgpt.com new-chat hotkey).
+   * No full page navigation — that would break the content-script compaction promise chain.
+   */
+  async newConversation(): Promise<boolean> {
+    this.context.logger.debug('Attempting to start a new ChatGPT conversation');
+
+    const newChat = this.findNewChatButton();
+    if (newChat) {
+      newChat.click();
+      this.context.logger.debug('Clicked ChatGPT new chat button');
+      await this.sleep(800);
+      if (this.isFreshConversation()) return true;
+      this.context.logger.warn('New chat button click did not reset conversation, trying shortcut');
+    }
+
+    this.dispatchNewChatShortcut();
+    await this.sleep(800);
+    if (this.isFreshConversation()) return true;
+
+    this.context.logger.warn('Failed to start a new ChatGPT conversation');
+    return false;
+  }
+
+  /** Whether this is a fresh conversation (no user messages in the thread = empty). */
+  private isFreshConversation(): boolean {
+    try {
+      return document.querySelectorAll(this.selectors.MESSAGE_USER).length === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Find "New chat": prefer data-testid, fall back to text match (both locales). */
+  private findNewChatButton(): HTMLElement | null {
+    const byTestId = document.querySelector<HTMLElement>(this.selectors.NEW_CHAT_BUTTON);
+    if (byTestId) return byTestId;
+
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, a, [role="button"]'));
+    return (
+      candidates.find(el => {
+        const t = (el.textContent ?? '').trim();
+        return t === '新聊天' || t === 'New chat' || t.startsWith('新聊天') || t.startsWith('New chat');
+      }) ?? null
+    );
+  }
+
+  /** Dispatch the ⌘/Ctrl+Shift+O new-chat hotkey. */
+  private dispatchNewChatShortcut(): void {
+    try {
+      const input = document.querySelector<HTMLElement>(this.selectors.CHAT_INPUT.split(', ')[0].trim());
+      const target = input ?? document.body;
+      target.focus();
+      const isMac = /Mac/i.test(navigator.platform || '');
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'O',
+          code: 'KeyO',
+          keyCode: 79,
+          which: 79,
+          ctrlKey: !isMac,
+          metaKey: isMac,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    } catch (error) {
+      this.context.logger.warn('Failed to dispatch new-chat shortcut', error);
+    }
+  }
+
+  /** Read the last assistant reply (text and code blocks). */
+  async readLastResponse(): Promise<ResponsePayload | null> {
+    this.context.logger.debug('Reading last ChatGPT assistant response');
+
+    const assistantEls = Array.from(document.querySelectorAll<HTMLElement>(this.selectors.MESSAGE_ASSISTANT));
+    if (assistantEls.length === 0) {
+      this.context.logger.warn('No ChatGPT assistant messages found');
+      return null;
+    }
+
+    const last = assistantEls[assistantEls.length - 1];
+    const text = this.extractConversationText(last);
+
+    const codeBlocks: { lang: string; code: string }[] = [];
+    last.querySelectorAll('pre').forEach(pre => {
+      const langEl = pre.querySelector('code[class*="language-"]');
+      const lang = langEl?.className.match(/language-(\w+)/)?.[1] ?? '';
+      const code = (pre.innerText || pre.textContent || '').trim();
+      codeBlocks.push({ lang, code });
+    });
+
+    return { text, codeBlocks, rawHtml: last.innerHTML };
+  }
+
+  /**
+   * Wait for model generation to complete.
+   * Detection: generation first (stop-button present), then stop-button disappears (back to send-button)
+   * and no DOM changes for 2s — either condition suffices, avoiding false positives on static pages.
+   */
+  async waitForResponse(timeoutMs: number = 60_000): Promise<boolean> {
+    this.context.logger.debug(`Waiting for ChatGPT response (timeout ${timeoutMs}ms)`);
+
+    const messageArea = document.querySelector('main') ?? document.body;
+    let lastMutation = Date.now();
+    const observer = new MutationObserver(() => {
+      lastMutation = Date.now();
+    });
+    observer.observe(messageArea, { childList: true, subtree: true, characterData: true });
+
+    let sawGeneration = false;
+    const check = (): boolean => {
+      const generating = !!document.querySelector(this.selectors.STOP_BUTTON);
+      if (generating) sawGeneration = true;
+      const stopGone = !generating;
+      const idleFor = Date.now() - lastMutation;
+      const conditions = [stopGone, idleFor > 2_000].filter(Boolean).length;
+      return sawGeneration && conditions >= 2;
+    };
+
+    const start = Date.now();
+    try {
+      while (Date.now() - start < timeoutMs) {
+        if (check()) {
+          this.context.logger.debug('ChatGPT response finished');
+          return true;
+        }
+        await this.sleep(400);
+      }
+      this.context.logger.warn(`Timed out waiting for ChatGPT response after ${timeoutMs}ms`);
+      return false;
+    } finally {
+      observer.disconnect();
+    }
+  }
+
+  /** Extract plain text from a message node (innerText, preserving code block line breaks). */
+  private extractConversationText(element: HTMLElement): string {
+    try {
+      return (element.innerText || element.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+    } catch {
+      return (element.textContent || '').trim();
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }

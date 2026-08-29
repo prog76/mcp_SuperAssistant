@@ -1,5 +1,5 @@
 import { BaseAdapterPlugin } from './base.adapter';
-import type { AdapterCapability, PluginContext } from '../plugin-types';
+import type { AdapterCapability, PluginContext, ConversationMessage, ResponsePayload } from '../plugin-types';
 // import { 
 //   findChatInputElement, 
 //   insertTextToChatInput, 
@@ -28,7 +28,9 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     'text-insertion',
     'form-submission',
     'file-attachment',
-    'dom-manipulation'
+    'dom-manipulation',
+    'conversation-read',
+    'conversation-create'
   ];
 
   // CSS selectors for AI Studio's UI elements (Updated Jan 2026)
@@ -39,7 +41,20 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     // Button insertion points (for MCP popover) - looking for buttons-row and button-wrapper
     BUTTON_INSERTION_CONTAINER: '.buttons-row .button-wrapper, .buttons-row, .prompt-box-container .buttons-row, .prompt-input-wrapper, .actions-container',
     // Alternative insertion points
-    FALLBACK_INSERTION: '.prompt-box-container, .input-area, .chat-input-container, .conversation-input'
+    FALLBACK_INSERTION: '.prompt-box-container, .input-area, .chat-input-container, .conversation-input',
+    // Turn containers (verified): User/Model turns each carry data-turn-role; content lives in .turn-content
+    TURN: '[data-turn-role]',
+    TURN_USER: '[data-turn-role="User"]',
+    TURN_MODEL: '[data-turn-role="Model"]',
+    // Chain-of-thought (model "thinking") lives inside mat-expansion-panel; must be excluded when reading for compaction
+    THINKING_PANEL: '.mat-expansion-panel',
+    // Native cumulative token count (e.g. "4,994 tokens")
+    TOKEN_COUNT: '.v3-token-count-value',
+    // Run/stop are the same ms-run-button button:
+    //   idle type="submit" (Run), generating type="button" + .spin + "Stop"
+    RUN_BUTTON: 'ms-run-button button',
+    // New conversation
+    NEW_CHAT_BUTTON: 'button[aria-label="New chat"]'
   };
 
   // URL patterns for navigation tracking
@@ -356,8 +371,9 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
     this.context.logger.debug(`Attempting to insert text into AI Studio chat input: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
 
     try {
-      // Use the proven chatInputHandler method
-      const success = insertTextToChatInput(text);
+      // Use the proven chatInputHandler method。
+      // After creating a conversation the composer may still be rendering; poll for the input before inserting.
+      const success = await this.waitAndInsertText(text);
 
       if (success) {
         // Emit success event to the new event system
@@ -380,6 +396,37 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
       this.emitExecutionFailed('insertText', errorMessage);
       return false;
     }
+  }
+
+  /**
+   * After a new-conversation switch AI Studio shows a "saving conversation" phase: the composer may not be rendered,
+   * or may be reset by that loading flow. Therefore:
+   *  - wait up to 20s (new-page load can exceed short default waits);
+   *  - after writing, verify the text persists and re-insert if cleared;
+   *  - succeed immediately when text is already present, avoiding duplicates.
+   */
+  private async waitAndInsertText(text: string, timeoutMs = 20_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    const probe = text.slice(-40); // tail snippet used to verify the text actually persisted in the input
+    while (Date.now() < deadline) {
+      const input = findChatInputElement();
+      if (input) {
+        if (input.value.includes(probe)) {
+          return true; // written and still present
+        }
+        if (insertTextToChatInput(text)) {
+          await this.sleep(800); // ride out the loading-flow reset
+          const retained = findChatInputElement();
+          if (retained && retained.value.includes(probe)) {
+            return true;
+          }
+          this.context.logger.debug('AI Studio inserted text was cleared by new-conversation loading; waiting to re-insert');
+        }
+      }
+      await this.sleep(250);
+    }
+    this.context.logger.warn(`AI Studio timed out waiting for input box (${timeoutMs}ms)`);
+    return false;
   }
 
   /**
@@ -1512,6 +1559,212 @@ export class AIStudioAdapter extends BaseAdapterPlugin {
       this.context.stores.tool?.addDetectedTool?.(tool);
     });
   }
+
+  // ---------------------------------------------------------------------
+  // Conversation capabilities (context compaction / conversation read-write)
+  // Selectors verified against aistudio.google.com (Aug 2026):
+  //   - turn containers [data-turn-role="User"|"Model"], content in .turn-content
+  //   - model chain-of-thought inside .mat-expansion-panel (excluded when reading)
+  //   - Run/stop share ms-run-button: idle type=submit, generating type=button + .spin
+  //   - native token count: .v3-token-count-value
+  //   - new chat: button[aria-label="New chat"]
+  // ---------------------------------------------------------------------
+
+  /** AI Studio native token count (avoids client-side estimation). Returns null to fall back to estimation. */
+  async readNativeTokenCount(): Promise<number | null> {
+    try {
+      const el = document.querySelector(this.selectors.TOKEN_COUNT);
+      const raw = el?.textContent?.trim() ?? '';
+      const m = raw.match(/([\d,]+)\s*tokens?/i);
+      if (!m) return null;
+      const n = parseInt(m[1].replace(/,/g, ''), 10);
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read the full conversation (user + model turns), excluding chain-of-thought panels.
+   * Text comes from .turn-content; on long conversations AI Studio may virtualize, so only currently rendered turns
+   * are read (sufficient for live monitoring; compaction can add scroll harvesting separately).
+   */
+  async readConversation(): Promise<ConversationMessage[] | null> {
+    this.context.logger.debug('Reading AI Studio conversation');
+
+    const turns = Array.from(
+      document.querySelectorAll<HTMLElement>(this.selectors.TURN)
+    ).filter(turn => !this.isInsideThinking(turn));
+
+    const messages: ConversationMessage[] = [];
+    for (const turn of turns) {
+      const role = (turn.getAttribute('data-turn-role') || '').toLowerCase();
+      if (role !== 'user' && role !== 'model') continue;
+      const text = this.extractTurnText(turn);
+      if (!text) continue;
+      messages.push({
+        role: role === 'user' ? 'user' : 'assistant',
+        content: text,
+        timestamp: Date.now()
+      });
+    }
+
+    if (messages.length === 0) {
+      this.context.logger.warn('AI Studio conversation parsed to zero messages');
+      return null;
+    }
+    this.context.logger.debug(`Read ${messages.length} messages from AI Studio conversation`);
+    return messages;
+  }
+
+  /** New conversation: click the New chat button (SPA, no reload). */
+  async newConversation(): Promise<boolean> {
+    this.context.logger.debug('Attempting to start a new AI Studio conversation');
+
+    const btn = document.querySelector<HTMLButtonElement>(this.selectors.NEW_CHAT_BUTTON);
+    if (!btn) {
+      this.context.logger.warn('New chat button not found');
+      return false;
+    }
+    btn.click();
+
+    // On long conversations / right after summarizing, New chat triggers a "save conversation" flow whose duration grows with context
+    // (observed 1-2+ minutes). Poll long enough and handle any confirmation dialog.
+    const deadline = Date.now() + 180_000;
+    let dialogHandled = false;
+    while (Date.now() < deadline) {
+      if (this.isFreshConversation()) return true;
+      // Auto-accept new/save confirmation dialogs if they appear (accept once; avoid stacking dialogs by repeat clicks)
+      if (!dialogHandled) {
+        dialogHandled = this.acceptNewChatConfirmDialog();
+      }
+      await this.sleep(400);
+    }
+    this.context.logger.warn('New chat button click did not reset conversation within 180s');
+    return false;
+  }
+
+  private isFreshConversation(): boolean {
+    try {
+      return document.querySelectorAll(this.selectors.TURN_USER).length === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * When starting a new long conversation AI Studio may show a save/discard confirmation; accept it when detected.
+   * Semantic keywords (new/restart/discard) prevent mis-clicking toasts or error dialogs.
+   */
+  private acceptNewChatConfirmDialog(): boolean {
+    const dialog = document.querySelector(
+      '[role="dialog"], .mat-mdc-dialog-container, .cdk-overlay-container mat-dialog-container',
+    );
+    if (!dialog) return false;
+    const hint = (el: Element): string =>
+      `${el.textContent || ''} ${el.getAttribute('aria-label') || ''} ${el.className || ''}`;
+    const btn = Array.from(dialog.querySelectorAll<HTMLElement>('button')).find(b =>
+      /new.?chat|new.?session|新建|重新开始|discard|放弃|不要保存/i.test(hint(b)),
+    );
+    if (!btn) return false;
+    btn.click();
+    this.context.logger.debug('Accepted new-chat confirmation dialog');
+    return true;
+  }
+
+  /** Read the last model reply (text and code blocks). */
+  async readLastResponse(): Promise<ResponsePayload | null> {
+    this.context.logger.debug('Reading last AI Studio model response');
+
+    const models = Array.from(
+      document.querySelectorAll<HTMLElement>(this.selectors.TURN_MODEL)
+    ).filter(turn => !this.isInsideThinking(turn));
+    if (models.length === 0) {
+      this.context.logger.warn('No AI Studio model turns found');
+      return null;
+    }
+
+    const last = models[models.length - 1];
+    const text = this.extractTurnText(last);
+
+    const codeBlocks: { lang: string; code: string }[] = [];
+    last.querySelectorAll('ms-code-block').forEach(block => {
+      const lang = block.getAttribute('data-test-language') ?? '';
+      const code = block.querySelector('pre code')?.textContent?.trim() ?? '';
+      codeBlocks.push({ lang, code });
+    });
+
+    return { text, codeBlocks, rawHtml: last.innerHTML };
+  }
+
+  /**
+   * Wait for model generation to complete.
+   * Detection: inside ms-run-button the button switches from type=submit (Run) while generating to
+   * type=button + .spin + "Stop"; completion = back to submit plus ~2s of stability.
+   */
+  async waitForResponse(timeoutMs: number = 60_000): Promise<boolean> {
+    this.context.logger.debug(`Waiting for AI Studio response (timeout ${timeoutMs}ms)`);
+
+    // No longer rely on "2s without DOM changes in main" (AI Studio keeps updating, so it never settles and times out).
+    // Use a Run-button state machine instead: observe generating (Stop) -> back to submit and stable ~1.2s,
+    // plus a new Model turn appearing — that counts as complete.
+    const initialModelTurns = document.querySelectorAll(this.selectors.TURN_MODEL).length;
+    const start = Date.now();
+    let sawGenerating = false;
+    let stableMs = 0;
+
+    const finishOk = (): boolean => {
+      const modelTurns = document.querySelectorAll(this.selectors.TURN_MODEL).length;
+      return modelTurns > initialModelTurns;
+    };
+
+    while (Date.now() - start < timeoutMs) {
+      const generating = this.isGenerating();
+      if (generating) {
+        sawGenerating = true;
+        stableMs = 0;
+      } else if (sawGenerating) {
+        stableMs += 400;
+        if (stableMs >= 1_200 && finishOk()) {
+          this.context.logger.debug('AI Studio response finished (run button stable + new model turn)');
+          return true;
+        }
+      }
+      await this.sleep(400);
+    }
+    this.context.logger.warn(`Timed out waiting for AI Studio response after ${timeoutMs}ms`);
+    return false;
+  }
+
+  /** Whether generation is in progress: the Run button switched to type=button with a Stop/progress icon. */
+  private isGenerating(): boolean {
+    const btn = document.querySelector<HTMLButtonElement>(this.selectors.RUN_BUTTON);
+    if (!btn) return false;
+    if (btn.type === 'button') {
+      return !!btn.querySelector('.spin') || /stop/i.test(btn.textContent || '');
+    }
+    return false;
+  }
+
+  private isInsideThinking(el: Element): boolean {
+    return !!el.closest(this.selectors.THINKING_PANEL);
+  }
+
+  /** Extract turn container plain text: clone, remove chain-of-thought panels, then read innerText (keeps code block breaks). */
+  private extractTurnText(turn: HTMLElement): string {
+    try {
+      const clone = turn.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll(this.selectors.THINKING_PANEL).forEach(n => n.remove());
+      const text = (clone.innerText || clone.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+      return text;
+    } catch {
+      return (turn.textContent || '').trim();
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 }
 
 
@@ -1593,11 +1846,15 @@ export const findChatInputElement = (): HTMLTextAreaElement | null => {
     return chatInput as HTMLTextAreaElement;
   }
 
-  // Final fallback: any textarea with .textarea class
-  chatInput = document.querySelector('textarea.textarea');
+  // Final fallback: any visible textarea (prefer the active composer one).
+  // The new-chat page placeholder may lag; filter by visibility to avoid hidden template textareas.
+  chatInput = Array.from(document.querySelectorAll('textarea.textarea')).find(el => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+  }) as HTMLTextAreaElement | null;
 
   if (chatInput) {
-    logger.debug('Found AiStudio input with generic textarea.textarea selector');
+    logger.debug('Found AiStudio input with visible textarea.textarea fallback');
     return chatInput as HTMLTextAreaElement;
   }
 
@@ -1637,11 +1894,23 @@ export const insertTextToChatInput = (text: string): boolean => {
       const currentText = chatInput.value;
       // Add new line before and after the current text if there's existing content
       const formattedText = currentText ? `${currentText}\n\n${text}` : text;
-      chatInput.value = formattedText;
 
-      // Trigger input event to make AiStudio recognize the change
-      const inputEvent = new Event('input', { bubbles: true });
-      chatInput.dispatchEvent(inputEvent);
+      // Write value via the native setter to bypass the value tracker, keeping Angular forms in sync
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      if (valueSetter) {
+        valueSetter.call(chatInput, formattedText);
+      } else {
+        chatInput.value = formattedText;
+      }
+      chatInput.selectionStart = chatInput.selectionEnd = formattedText.length;
+
+      // Fire input events so AI Studio (Angular) syncs its model and enables Run
+      try {
+        chatInput.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      } catch {
+        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      chatInput.dispatchEvent(new Event('change', { bubbles: true }));
 
       // Focus the textarea
       chatInput.focus();
@@ -1802,179 +2071,100 @@ export const submitChatInput = (maxWaitTime = 5000): Promise<boolean> => {
         return;
       }
 
-      // Define a function to find the submit button
-      const findSubmitButton = (): HTMLButtonElement | null => {
-        const submitButton =
-          document.querySelector('button[aria-label="Submit"]') ||
-          document.querySelector('button[aria-label="Send"]') ||
-          document.querySelector('button[type="submit"]') ||
-          // Look for a button next to the textarea
-          chatInput.parentElement?.querySelector('button') ||
-          // Common pattern: button with paper plane icon
-          document.querySelector('button svg[stroke="currentColor"]')?.closest('button');
-
-        return submitButton as HTMLButtonElement | null;
+      // AI Studio Run button: idle type=submit (Run), generating type=button + "Stop".
+      // Availability is expressed via aria-disabled (false = clickable). Clicking Run sends.
+      const findRunButton = (): HTMLButtonElement | null => {
+        return (
+          (document.querySelector('ms-run-button button') as HTMLButtonElement | null) ||
+          document.querySelector('button[jslog*="225921"]') ||
+          document.querySelector<HTMLButtonElement>('button[type="submit"]')
+        );
       };
 
-      // Try to find and check the submit button
-      const submitButton = findSubmitButton();
+      const isRunEnabled = (btn: HTMLButtonElement | null): boolean => {
+        if (!btn) return false;
+        if (btn.type === 'button') return false; // generating (Stop)
+        if (btn.disabled) return false;
+        if (btn.getAttribute('disabled') !== null) return false;
+        if (btn.getAttribute('aria-disabled') === 'true') return false;
+        if (btn.classList.contains('disabled')) return false;
+        return true;
+      };
 
-      if (submitButton) {
-        logger.debug(`Found submit button (${submitButton.getAttribute('aria-label') || 'unknown'})`);
-
-        // Function to check if button is enabled and click it
-        const tryClickingButton = () => {
-          const button = findSubmitButton();
-          if (!button) {
-            logger.debug('Submit button no longer found');
-            resolve(false);
-            return;
-          }
-
-          // Check if the button is disabled
-          const isDisabled =
-            button.disabled ||
-            button.getAttribute('disabled') !== null ||
-            button.getAttribute('aria-disabled') === 'true' ||
-            button.classList.contains('disabled');
-
-          if (!isDisabled) {
-            logger.debug('Submit button is enabled, clicking it');
-            button.click();
-            resolve(true);
-          } else {
-            logger.debug('Submit button is disabled, waiting...');
-          }
-        };
-
-        // Set up a timer to periodically check if the button becomes enabled
-        let elapsedTime = 0;
-        const checkInterval = 200; // Check every 200ms
-
-        const intervalId = setInterval(() => {
-          elapsedTime += checkInterval;
-
-          tryClickingButton();
-
-          // If we've waited too long, try alternative methods
-          if (elapsedTime >= maxWaitTime) {
-            clearInterval(intervalId);
-            logger.debug(`Button remained disabled for ${maxWaitTime}ms, trying alternative methods`);
-
-            // Method 2: Simulate Enter key press
-            logger.debug('Simulating Enter key press as fallback');
-
-            // Focus the textarea first
-            chatInput.focus();
-
-            // Create and dispatch keydown event (Enter key)
-            const keydownEvent = new KeyboardEvent('keydown', {
-              key: 'Enter',
-              code: 'Enter',
-              keyCode: 13,
-              which: 13,
-              bubbles: true,
-              cancelable: true,
-            });
-
-            // Create and dispatch keypress event
-            const keypressEvent = new KeyboardEvent('keypress', {
-              key: 'Enter',
-              code: 'Enter',
-              keyCode: 13,
-              which: 13,
-              bubbles: true,
-              cancelable: true,
-            });
-
-            // Create and dispatch keyup event
-            const keyupEvent = new KeyboardEvent('keyup', {
-              key: 'Enter',
-              code: 'Enter',
-              keyCode: 13,
-              which: 13,
-              bubbles: true,
-              cancelable: true,
-            });
-
-            // Dispatch all events in sequence
-            chatInput.dispatchEvent(keydownEvent);
-            chatInput.dispatchEvent(keypressEvent);
-            chatInput.dispatchEvent(keyupEvent);
-
-            // Try to find and submit a form as a last resort
-            const form = chatInput.closest('form');
-            if (form) {
-              logger.debug('Found form element, submitting it');
-              form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
-            }
-
-            logger.debug('Attempted all fallback methods to submit chat input');
-            resolve(true);
-          }
-        }, checkInterval);
-
-        // Initial check - maybe it's already enabled
-        tryClickingButton();
-
-        // If the button is already enabled and clicked, clear the interval
-        if (submitButton && !submitButton.disabled) {
-          clearInterval(intervalId);
-        }
-      } else {
-        // If no button found, proceed with alternative methods immediately
-        logger.debug('No submit button found, trying alternative methods');
-
-        // Method 2: Simulate Enter key press
-        logger.debug('Simulating Enter key press as fallback');
-
-        // Focus the textarea first
+      // AI Studio submit hotkey is ⌘/Ctrl+Enter (the Run button icon shows ⌘+Return).
+      const pressSubmitShortcut = (): void => {
         chatInput.focus();
-
-        // Create and dispatch keydown event (Enter key)
-        const keydownEvent = new KeyboardEvent('keydown', {
+        const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
+        const base = {
           key: 'Enter',
           code: 'Enter',
           keyCode: 13,
           which: 13,
           bubbles: true,
           cancelable: true,
-        });
+          ctrlKey: !isMac,
+          metaKey: isMac,
+          altKey: false,
+          shiftKey: false
+        };
+        chatInput.dispatchEvent(new KeyboardEvent('keydown', base));
+        chatInput.dispatchEvent(new KeyboardEvent('keyup', base));
 
-        // Create and dispatch keypress event
-        const keypressEvent = new KeyboardEvent('keypress', {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true,
-        });
+        // Extra fallback: click the Run button in whatever state it is in
+        const run = findRunButton();
+        if (run) {
+          try {
+            run.click();
+          } catch {
+            /* ignore */
+          }
+        }
+      };
 
-        // Create and dispatch keyup event
-        const keyupEvent = new KeyboardEvent('keyup', {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true,
-        });
+      let settled = false;
+      const settle = (ok: boolean): void => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
 
-        // Dispatch all events in sequence
-        chatInput.dispatchEvent(keydownEvent);
-        chatInput.dispatchEvent(keypressEvent);
-        chatInput.dispatchEvent(keyupEvent);
+      const startedAt = Date.now();
+      const interval = setInterval(() => {
+        const run = findRunButton();
 
-        // Try to find and submit a form as a last resort
-        const form = chatInput.closest('form');
-        if (form) {
-          logger.debug('Found form element, submitting it');
-          form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+        // If the user/upstream already sent while waiting, treat detected generation as submitted to avoid deadlock
+        if (run && run.type === 'button') {
+          clearInterval(interval);
+          logger.debug('AI Studio already generating a response, treat as submitted');
+          settle(true);
+          return;
         }
 
-        logger.debug('Attempted all methods to submit chat input');
-        resolve(true);
+        if (isRunEnabled(run)) {
+          clearInterval(interval);
+          run!.click();
+          logger.debug('AI Studio Run button enabled, clicked to submit');
+          settle(true);
+          return;
+        }
+
+        if (Date.now() - startedAt >= maxWaitTime) {
+          clearInterval(interval);
+          logger.debug(`AI Studio Run button stayed disabled for ${maxWaitTime}ms, using Ctrl/Cmd+Enter shortcut`);
+          pressSubmitShortcut();
+          settle(true);
+        }
+      }, 150);
+
+      // check immediately on first pass
+      const run = findRunButton();
+      if (run && run.type === 'button') {
+        // already generating — retry will catch it (interval decides later)
+      } else if (isRunEnabled(run)) {
+        clearInterval(interval);
+        run!.click();
+        logger.debug('AI Studio Run button enabled immediately, clicked to submit');
+        settle(true);
       }
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);

@@ -60,6 +60,8 @@ const initialUserPreferences: UserPreferences = {
   autoExecuteDelay: 2,  // Default delay in seconds
   autoSubmitDelay: 2,   // Default delay in seconds
   autoSubmitIterationTimeout: 60, // Default timeout in seconds (60 seconds)
+  autoCompactEnabled: false,   // disabled by default to avoid unexpected interruptions
+  autoCompactMaxTokens: 512_000, // default 512K
 };
 
 const initialState: Omit<UIState, 'toggleSidebar' | 'toggleMinimize' | 'resizeSidebar' | 'setSidebarVisibility' | 'updatePreferences' | 'addNotification' | 'addRemoteNotification' | 'removeNotification' | 'dismissNotification' | 'clearNotifications' | 'openModal' | 'closeModal' | 'setGlobalLoading' | 'setTheme' | 'setMCPEnabled'> = {

@@ -22,7 +22,9 @@ export type AdapterCapability =
   | 'url-navigation'
   | 'element-selection'
   | 'screenshot-capture'
-  | 'dom-manipulation';
+  | 'dom-manipulation'
+  | 'conversation-read'      // read the full current conversation (compaction / multi-agent)
+  | 'conversation-create';   // create a new conversation
 
 export type PluginType =
   | 'sidebar'
@@ -69,6 +71,27 @@ export interface PluginUtils {
   getUniqueId: (prefix?: string) => string;
 }
 
+/**
+ * One message in a conversation (plain text, HTML stripped).
+ * Used by compaction readConversation / multi-agent readLastResponse.
+ */
+export interface ConversationMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;           // plain text (HTML stripped; code blocks keep markdown fences)
+  timestamp?: number;
+  messageId?: string;        // platform-native message id, for dedup / continuation reads
+}
+
+/**
+ * AI reply payload (multimodal: text + code blocks + file links).
+ */
+export interface ResponsePayload {
+  text: string;
+  codeBlocks?: { lang: string; code: string }[];
+  fileLinks?: string[];
+  rawHtml?: string;
+}
+
 export interface AdapterPlugin {
   readonly name: string;
   readonly version: string;
@@ -93,6 +116,19 @@ export interface AdapterPlugin {
   selectElement?(selector: string): Promise<HTMLElement | null>;
   navigateToUrl?(url: string): Promise<boolean>;
   executeScript?<T>(script: string | (() => T)): Promise<T | null>;
+
+  // Conversation capabilities (context compaction / multi-agent collaboration)
+  readConversation?(): Promise<ConversationMessage[] | null>;
+  newConversation?(): Promise<boolean>;
+  readLastResponse?(): Promise<ResponsePayload | null>;
+  waitForResponse?(timeoutMs: number): Promise<boolean>;
+
+  // Platform-native token count (e.g. AI Studio ms-token-count). Return null to fall back to estimation.
+  readNativeTokenCount?(): Promise<number | null>;
+
+  // Conversation mode: read/restore the platform conversation mode (e.g. DeepSeek fast/expert/vision)
+  getConversationMode?(): Promise<string | null>;
+  setConversationMode?(mode: string): Promise<boolean>;
 
   // Utility methods
   isSupported(): boolean | Promise<boolean>;

@@ -123,13 +123,13 @@ export const WEBSITE_CONFIGS: Array<{
     {
       urlPattern: 'chatgpt.com',
       config: {
-        // ChatGPT 当前版本的助手消息：每个工具调用被渲染成 markdown 里的一个 <pre>，
-        // 同时 CodeMirror 只读副本（pre[class="cm-content"]）和隐藏的 pre.overflow-visible!
-        // 会作为同一内容的同步副本出现。targetSelectors 必须：
-        //   1) 只命中真实可见的 markdown <pre>（避免命中 CodeMirror 副本导致重复渲染）
-        //   2) 不能再用 '[...] p' —— 实测 ChatGPT 不把工具 JSON 放进 <p>
+        // Current ChatGPT assistant messages render each tool call as a <pre> inside markdown,
+        // plus CodeMirror read-only copies (pre[class="cm-content"]) and hidden pre.overflow-visible!
+        // appear as synchronized copies of the same content. targetSelectors must:
+        //   1) match only the real visible markdown <pre> (avoiding CodeMirror copies -> duplicate renders)
+        //   2) no longer use '[...] p' — verified ChatGPT does not put tool JSON into <p>
         targetSelectors: ['[data-message-author-role="assistant"] .markdown pre:not(.cm-content)'],
-        // 同步副本/CodeMirror 不参与流式监测，避免误触发重复渲染
+        // Synchronized copies/CodeMirror are excluded from streaming monitoring to avoid duplicate renders
         streamingContainerSelectors: ['.markdown'],
         function_result_selector: ['div[data-message-author-role="user"]'],
       },

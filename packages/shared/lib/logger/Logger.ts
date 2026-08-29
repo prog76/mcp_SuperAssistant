@@ -36,7 +36,6 @@ export class Logger implements ILogger {
     // this.level = config?.level ?? this.defaultLevel;
 
     // Forcing the default log level to ERROR to reduce verbosity in current setup
-    // this.level = LogLevel.DEBUG;
     this.level = LogLevel.ERROR;
 
     // Set up component levels if provided

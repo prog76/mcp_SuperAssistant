@@ -2,7 +2,9 @@ import type {
   AdapterPlugin, 
   PluginContext, 
   AdapterCapability, 
-  DetectedTool 
+  DetectedTool,
+  ConversationMessage,
+  ResponsePayload
 } from '../plugin-types';
 
 /**
@@ -88,6 +90,43 @@ export abstract class BaseAdapterPlugin implements AdapterPlugin {
   async executeScript<T>(script: string | (() => T)): Promise<T | null> {
     this.context.logger.warn('executeScript not implemented by this adapter.');
     return null;
+  }
+
+  // Conversation capabilities - default degrade implementations.
+  // Specific adapters override these when they support the capability.
+  async readConversation(): Promise<ConversationMessage[] | null> {
+    this.context.logger.warn('readConversation not implemented by this adapter.');
+    return null;
+  }
+
+  async newConversation(): Promise<boolean> {
+    this.context.logger.warn('newConversation not implemented by this adapter.');
+    return false;
+  }
+
+  async readLastResponse(): Promise<ResponsePayload | null> {
+    this.context.logger.warn('readLastResponse not implemented by this adapter.');
+    return null;
+  }
+
+  async waitForResponse(timeoutMs: number): Promise<boolean> {
+    this.context.logger.warn('waitForResponse not implemented by this adapter.');
+    return false;
+  }
+
+  /** Platform-native token count; not provided by default (return null to fall back to estimation). */
+  async readNativeTokenCount(): Promise<number | null> {
+    return null;
+  }
+
+  async getConversationMode(): Promise<string | null> {
+    this.context.logger.warn('getConversationMode not implemented by this adapter.');
+    return null;
+  }
+
+  async setConversationMode(mode: string): Promise<boolean> {
+    this.context.logger.warn('setConversationMode not implemented by this adapter.');
+    return false;
   }
 
   // Utility methods

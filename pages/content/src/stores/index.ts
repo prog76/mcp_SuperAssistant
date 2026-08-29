@@ -27,6 +27,9 @@ export type { AdapterState } from './adapter.store';
 export { useConfigStore } from './config.store';
 export type { ConfigState, FeatureFlag, UserProperties, NotificationConfig, RemoteNotification } from './config.store';
 
+export { useTokenStore } from './token.store';
+export type { TokenState } from './token.store';
+
 // Potentially a root store or combined state if needed, though Zustand encourages individual store usage.
 // For now, individual exports are fine.
 

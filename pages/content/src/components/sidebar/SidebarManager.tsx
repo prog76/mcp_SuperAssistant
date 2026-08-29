@@ -34,6 +34,8 @@ const getZustandPreferences = (): UserPreferences => {
     isMinimized: false,
     customInstructions: '',
     customInstructionsEnabled: false,
+    autoCompactEnabled: false,
+    autoCompactMaxTokens: 512000,
   };
 };
 
