@@ -119,6 +119,8 @@ set-env:
 ## Release Targets
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
 
+BUMP ?= patch
+
 # Pack Chrome CRX locally
 pack-crx: check-deps
 	@echo "$(GREEN)Packing Chrome CRX...$(NC)"
@@ -140,7 +142,6 @@ release-prep: build build-firefox zip
 release:
 	@echo "$(GREEN)Running release ($(BUMP))...$(NC)"
 	@bash bash-scripts/release.sh $(BUMP)
-
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
 ## Help
 ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ## ##
