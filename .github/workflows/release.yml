@@ -66,6 +66,7 @@ jobs:
         run: pnpm build:firefox
 
       - name: Sign Firefox XPI (Unlisted)
+        continue-on-error: true
         env:
           AMO_API_KEY: ${{ secrets.AMO_API_KEY }}
           AMO_API_SECRET: ${{ secrets.AMO_API_SECRET }}
@@ -86,8 +87,9 @@ jobs:
             cp "$SIGNED_XPI" extension-firefox.xpi
             echo "Renamed $SIGNED_XPI to extension-firefox.xpi"
           else
-            echo "Warning: No signed XPI found in dist-zip/"
-            ls -la
+            echo "Warning: No signed XPI found. Creating unsigned Firefox archive as fallback."
+            (cd ../dist && zip -r ../dist-zip/extension-firefox.xpi . -x '*.map' '*.pem' >/dev/null)
+            echo "Created unsigned extension-firefox.xpi (fallback)"
           fi
 
       # ---------- PACK CHROME .CRX ----------
