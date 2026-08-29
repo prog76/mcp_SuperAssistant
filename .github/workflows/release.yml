@@ -17,6 +17,10 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -133,8 +137,8 @@ jobs:
           keep_files: false
           destination_dir: .
           force_orphan: true
-          git_config_name: 'github-actions[bot]'
-          git_config_email: 'github-actions[bot]@users.noreply.github.com'
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
           exclude_assets: '*.zip,*.crx,*.xpi,extension-*'
 
       # ---------- CREATE GITHUB RELEASE ----------
