@@ -235,7 +235,6 @@ In such cases, use better models which are meant for tool calling or have better
 - Ask explicitily to use the tools by mentioning them in the prompt.
 - This Below is an example of correct MCP function call format, which is rendered by MCP SuperAssistant extension:
 
-```
 ```jsonl
 {"type": "function_call_start", "name": "function_name", "call_id": 1}
 {"type": "description", "text": "Short 1 line of what this function does"}
@@ -243,17 +242,34 @@ In such cases, use better models which are meant for tool calling or have better
 {"type": "parameter", "key": "parameter_2", "value": "value_2"}
 {"type": "function_call_end", "call_id": 1}
 ```
-```
 
 ### Manual Installation (Development)
 
-#### Release Version
+#### Chrome (Release Version)
+
 1. Download the latest release from [Releases](https://github.com/prog76/mcp_SuperAssistant/releases)
 2. Unzip the downloaded file
 3. Navigate to `chrome://extensions/` in Chrome
 4. Enable "Developer mode"
 5. Click "Load unpacked" and select the unzipped directory
- 6. Follow [Connecting to Local Proxy Server](#connecting-to-local-proxy-server) to connect to your MCP server
+6. Follow [Connecting to Local Proxy Server](#connecting-to-local-proxy-server) to connect to your MCP server
+
+#### Chrome (.crx / Enterprise)
+
+1. Download the `extension.crx` file from the latest [Release](https://github.com/prog76/mcp_SuperAssistant/releases)
+2. Open `chrome://extensions/`, enable "Developer mode"
+3. Drag and drop `extension.crx` onto the page to install it
+4. Follow [Chrome Enterprise Deployment](#chrome-enterprise-deployment-auto-updates) for managed, auto-updating installs
+
+#### Firefox
+
+1. Download the `extension-firefox.xpi` file from the latest [Release](https://github.com/prog76/mcp_SuperAssistant/releases)
+2. Open `about:debugging#/runtime/this-firefox` in Firefox
+3. Click "Load Temporary Add-on…" and select the `.xpi` file
+   - Note: A temporary add-on is removed when Firefox is closed
+4. For a persistent install, go to `about:addons` → gear icon → "Install Add-on From File…" and select the `.xpi`
+   - The unlisted add-on is signed by AMO, so no developer mode is required
+5. Follow [Connecting to Local Proxy Server](#connecting-to-local-proxy-server) to connect to your MCP server
 
 ### Chrome Enterprise Deployment (Auto-Updates)
 
