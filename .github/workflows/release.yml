@@ -96,6 +96,16 @@ jobs:
             echo "Created unsigned extension-firefox.xpi (fallback)"
           fi
 
+      # ---------- GENERATE FIREFOX UPDATES.JSON (unlisted auto-update) ----------
+      - name: Generate firefox-updates.json
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          FIREFOX_ADDON_ID: ${{ secrets.FIREFOX_ADDON_ID }}
+          XPI_PATH: ./dist-zip/extension-firefox.xpi
+          OUTPUT_DIR: ./dist-zip
+        run: node .github/scripts/generate-firefox-updates.js
+
       # ---------- PACK CHROME .CRX ----------
       - name: Pack Chrome CRX
         env:
@@ -151,5 +161,6 @@ jobs:
             ./dist-zip/extension-firefox.xpi
             ./dist-zip/extension.crx
             ./dist-zip/update.xml
+            ./dist-zip/firefox-updates.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

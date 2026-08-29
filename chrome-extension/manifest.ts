@@ -24,6 +24,8 @@ const manifest = {
   browser_specific_settings: {
     gecko: {
       id: 'prog76@mcpsuperassistant.ai',
+      // Unlisted add-ons don't auto-update via AMO; host our own update manifest.
+      update_url: 'https://prog76.github.io/mcp_SuperAssistant/firefox-updates.json',
     },
   },
   version: packageJson.version,

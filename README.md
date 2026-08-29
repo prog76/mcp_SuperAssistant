@@ -291,6 +291,24 @@ For enterprise or advanced deployments, the extension supports automatic updates
 **For End Users:**
 - Alternatively, you can manually install the `.crx` file by dragging it onto `chrome://extensions/`
 
+### Firefox Auto-Updates (Unlisted)
+
+Because the Firefox build is an **unlisted** AMO add-on, it does not update through Mozilla's servers automatically. The extension ships with a self-hosted update manifest so installed copies update themselves.
+
+**How it works:**
+- The extension manifest declares `browser_specific_settings.gecko.update_url` pointing to `https://prog76.github.io/mcp_SuperAssistant/firefox-updates.json`
+- Firefox checks this URL every ~24 hours
+- The manifest lists the latest version, its signed `.xpi` download link, and a SHA-256 `update_hash` for integrity
+- When a new release is published, the manifest is regenerated and Firefox installs the update automatically
+
+**Important caveats:**
+- The `update_url` is baked into the installed version — if it ever moves, existing installs must be reinstalled
+- Only versions published with this pipeline appear in the manifest
+- Enterprise admins can override the update URL via the `ExtensionsSettings` policy
+
+**Manual verification:**
+- Check the deployed manifest at [`firefox-updates.json`](https://prog76.github.io/mcp_SuperAssistant/firefox-updates.json)
+
 ## Development
 
 ### Prerequisites
