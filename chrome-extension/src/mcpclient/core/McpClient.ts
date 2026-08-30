@@ -11,6 +11,7 @@ import type { ClientConfig, ConnectionRequest } from '../types/config.js';
 import { DEFAULT_CLIENT_CONFIG } from '../types/config.js';
 import type { TransportType, ITransportPlugin, PluginConfig } from '../types/plugin.js';
 import type { Primitive, NormalizedTool, PrimitivesResponse } from '../types/primitives.js';
+import { getSessionId, saveSessionId, clearSessionId } from '../utils/session-store.js';
 import type { AllEvents } from '../types/events.js';
 import { createLogger } from '@extension/shared/lib/logger';
 import { analyticsService } from '../../../utils/analytics-service.js';
@@ -30,6 +31,10 @@ export class McpClient extends EventEmitter<AllEvents> {
   private primitivesCache: PrimitivesResponse | null = null;
   private primitivesCacheTime: number = 0;
   private readonly CACHE_TTL = 300000; // 5 minutes
+  /** Last connection request, used to reconnect when a resumed session turns out to be expired */
+  private lastConnectionRequest: ConnectionRequest | null = null;
+  /** True when the active transport resumed a previously stored Mcp-Session-Id */
+  private resumedFromSavedSession = false;
 
   constructor(config: Partial<ClientConfig> = {}) {
     super();
@@ -133,6 +138,19 @@ export class McpClient extends EventEmitter<AllEvents> {
   private async performConnection(request: ConnectionRequest): Promise<void> {
     const { uri, type, config: pluginConfig } = request;
 
+    this.lastConnectionRequest = request;
+    // Remember whether we are about to resume a stored session, so tool calls
+    // can fall back to a fresh session if the server no longer has it (404).
+    if (type === 'streamable-http' && this.config.sessionKey) {
+      try {
+        this.resumedFromSavedSession = (await getSessionId(this.config.sessionKey)) !== null;
+      } catch {
+        this.resumedFromSavedSession = false;
+      }
+    } else {
+      this.resumedFromSavedSession = false;
+    }
+
     try {
       logger.debug(`Connecting to ${uri} via ${type}`);
       this.emit('client:connecting', { uri, type });
@@ -142,10 +160,12 @@ export class McpClient extends EventEmitter<AllEvents> {
         await this.disconnect();
       }
 
-      // Get the plugin configuration
+      // Get the plugin configuration (include the session key so the
+      // streamable-HTTP plugin can persist/resume the Mcp-Session-Id)
       const finalConfig = {
         ...this.config.plugins[type],
         ...pluginConfig,
+        sessionKey: this.config.sessionKey,
       };
 
       // Get and initialize the plugin
@@ -214,6 +234,17 @@ export class McpClient extends EventEmitter<AllEvents> {
       this.activeTransport = transport;
       this.isConnectedFlag = true;
 
+      // Persist the streamable-HTTP Mcp-Session-Id so the session can be
+      // resumed after a service-worker restart.
+      if (type === 'streamable-http' && this.config.sessionKey) {
+        const sessionId = (transport as { sessionId?: string }).sessionId;
+        if (sessionId) {
+          await saveSessionId(this.config.sessionKey, sessionId).catch(error => {
+            logger.warn('[McpClient] Failed to persist MCP session id:', error);
+          });
+        }
+      }
+
       // Clear cache on new connection
       this.clearPrimitivesCache();
 
@@ -281,6 +312,16 @@ export class McpClient extends EventEmitter<AllEvents> {
 
     try {
       await this.cleanup();
+
+      // A deliberate disconnect terminates the server-side session (the SDK
+      // sends HTTP DELETE with the session id), so stop persisting it.
+      if (this.config.sessionKey) {
+        await clearSessionId(this.config.sessionKey).catch(error => {
+          logger.warn('[McpClient] Failed to clear persisted MCP session id:', error);
+        });
+      }
+      this.resumedFromSavedSession = false;
+
       logger.debug('[McpClient] Disconnected successfully');
 
       if (currentType) {
@@ -329,6 +370,42 @@ export class McpClient extends EventEmitter<AllEvents> {
   }
 
   async callTool(
+    toolName: string,
+    args: Record<string, any>,
+    adapterName?: string,
+    options?: import('../types/plugin.js').ToolCallOptions
+  ): Promise<any> {
+    try {
+      return await this.callToolInternal(toolName, args, adapterName, options);
+    } catch (error) {
+      // If we resumed a stored session that the server no longer knows (it
+      // replies 404 per the MCP spec), drop the stale id, reconnect with a
+      // fresh initialize, and retry the tool call exactly once.
+      if (this.resumedFromSavedSession && this.isSessionExpiredError(error)) {
+        logger.warn(`[McpClient] Resumed MCP session was rejected (expired?). Re-initializing session...`);
+        this.resumedFromSavedSession = false;
+        if (this.config.sessionKey) {
+          await clearSessionId(this.config.sessionKey).catch(() => {});
+        }
+        const request = this.lastConnectionRequest;
+        if (request) {
+          await this.connect(request);
+          return await this.callToolInternal(toolName, args, adapterName, options);
+        }
+      }
+      throw error;
+    }
+  }
+
+  /** Detect the server rejecting our (resumed) session: HTTP 404 or an explicit session error. */
+  private isSessionExpiredError(error: unknown): boolean {
+    const err = error as { code?: number | string; message?: string };
+    if (err?.code === 404) return true;
+    const message = err?.message ?? '';
+    return /404|session.*(not found|expired|invalid)|unknown session/i.test(message);
+  }
+
+  private async callToolInternal(
     toolName: string,
     args: Record<string, any>,
     adapterName?: string,

@@ -54,29 +54,80 @@ export type {
 
 export type { AllEvents } from './types/events.js';
 
-// Singleton client instance for backward compatibility
-let globalClient: McpClient | null = null;
+// Client pool for per-tab MCP sessions.
+// Each McpClient owns its own transport instance, so streamable-HTTP servers
+// assign a separate Mcp-Session-Id per key: one shared session under 'global'
+// (used for tool/prompt listing) and one isolated session per browser tab
+// ('tab-<id>'), so different chats get different server-side sessions.
+const clients = new Map<string, McpClient>();
+
+const GLOBAL_KEY = 'global';
 
 /**
- * Get or create the global MCP client instance
+ * Get or create the client for a given session key
+ */
+async function getClientForKey(sessionKey: string = GLOBAL_KEY): Promise<McpClient> {
+  let client = clients.get(sessionKey);
+  if (!client) {
+    try {
+      client = new McpClient({ sessionKey });
+      await client.initialize();
+
+      // Set up global event listeners for connection status changes
+      setupGlobalClientEventListeners(client);
+    } catch (error) {
+      logger.error(`[getClientForKey:${sessionKey}] Failed to initialize client:`, error);
+      // Create a fallback client without plugin loading
+      client = new McpClient({ sessionKey });
+      // Don't initialize to avoid plugin loading issues
+      setupGlobalClientEventListeners(client);
+    }
+    clients.set(sessionKey, client);
+  }
+  return client;
+}
+
+/**
+ * Get or create the global (shared) MCP client instance
  */
 async function getGlobalClient(): Promise<McpClient> {
-  if (!globalClient) {
-    try {
-      globalClient = new McpClient();
-      await globalClient.initialize();
-      
-      // Set up global event listeners for connection status changes
-      setupGlobalClientEventListeners(globalClient);
-    } catch (error) {
-      logger.error('[getGlobalClient] Failed to initialize client:', error);
-      // Create a fallback client without plugin loading
-      globalClient = new McpClient();
-      // Don't initialize to avoid plugin loading issues
-      setupGlobalClientEventListeners(globalClient);
+  return getClientForKey(GLOBAL_KEY);
+}
+
+/**
+ * Disconnect and drop the client for a given session key (e.g. when its tab closes)
+ */
+export async function disconnectMcpSession(sessionKey: string): Promise<void> {
+  const client = clients.get(sessionKey);
+  if (client) {
+    clients.delete(sessionKey);
+    if (client.isConnected()) {
+      await client.disconnect().catch(error => {
+        logger.error(`[disconnectMcpSession:${sessionKey}] Disconnect failed:`, error);
+      });
     }
+    logger.debug(`[disconnectMcpSession:${sessionKey}] Session released`);
   }
-  return globalClient;
+}
+
+/**
+ * Disconnect and drop every pooled client (e.g. on server config change or force reconnect)
+ */
+export async function resetAllMcpConnectionState(): Promise<void> {
+  const entries = [...clients.entries()];
+  await Promise.all(
+    entries.map(async ([sessionKey, client]) => {
+      clients.delete(sessionKey);
+      if (client.isConnected()) {
+        await client.disconnect().catch(error => {
+          logger.error(`[resetAllMcpConnectionState:${sessionKey}] Disconnect failed:`, error);
+        });
+      }
+    })
+  );
+  if (entries.length > 0) {
+    logger.debug(`[resetAllMcpConnectionState] Released ${entries.length} session(s)`);
+  }
 }
 
 /**
@@ -150,8 +201,8 @@ function detectTransportType(uri: string): import('./types/plugin.js').Transport
 // =============================================================================
 
 export function isMcpServerConnected(): boolean {
-  if (!globalClient) return false;
-  return globalClient.isConnected();
+  const client = clients.get(GLOBAL_KEY);
+  return client ? client.isConnected() : false;
 }
 
 export async function checkMcpServerConnection(): Promise<boolean> {
@@ -170,9 +221,10 @@ export async function callToolWithBackwardsCompatibility(
   args: { [key: string]: unknown },
   adapterName?: string,
   transportType?: import('./types/plugin.js').TransportType,
-  options?: import('./types/plugin.js').ToolCallOptions
+  options?: import('./types/plugin.js').ToolCallOptions,
+  sessionKey: string = GLOBAL_KEY
 ): Promise<any> {
-  const client = await getGlobalClient();
+  const client = await getClientForKey(sessionKey);
   const type = transportType || detectTransportType(uri);
 
   if (!client.isConnected()) {
@@ -185,7 +237,8 @@ export async function callToolWithBackwardsCompatibility(
 export async function getPrimitivesWithBackwardsCompatibility(
   uri: string,
   forceRefresh: boolean = false,
-  transportType?: import('./types/plugin.js').TransportType
+  transportType?: import('./types/plugin.js').TransportType,
+  sessionKey: string = GLOBAL_KEY
 ): Promise<any[]> {
   const client = await getGlobalClient();
   const type = transportType || detectTransportType(uri);
@@ -230,8 +283,12 @@ export async function getPromptWithBackwardsCompatibility(
   return await client.getPrompt(promptName, args);
 }
 
-export async function forceReconnectToMcpServer(uri: string, transportType?: import('./types/plugin.js').TransportType): Promise<void> {
-  const client = await getGlobalClient();
+export async function forceReconnectToMcpServer(
+  uri: string,
+  transportType?: import('./types/plugin.js').TransportType,
+  sessionKey: string = GLOBAL_KEY
+): Promise<void> {
+  const client = await getClientForKey(sessionKey);
   const type = transportType || detectTransportType(uri);
   
   if (client.isConnected()) {
@@ -252,8 +309,9 @@ export async function runWithBackwardsCompatibility(uri: string, transportType?:
 }
 
 export function resetMcpConnectionState(): void {
-  if (globalClient && globalClient.isConnected()) {
-    globalClient.disconnect().catch(error => {
+  const client = clients.get(GLOBAL_KEY);
+  if (client && client.isConnected()) {
+    client.disconnect().catch(error => {
       logger.error('[Backward Compatibility] resetMcpConnectionState failed:', error);
     });
   }
@@ -264,8 +322,9 @@ export function resetMcpConnectionStateForRecovery(): void {
 }
 
 export function abortMcpConnection(): void {
-  if (globalClient) {
-    globalClient.disconnect().catch(error => {
+  const client = clients.get(GLOBAL_KEY);
+  if (client) {
+    client.disconnect().catch(error => {
       logger.error('[Backward Compatibility] abortMcpConnection failed:', error);
     });
   }

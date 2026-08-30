@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { ITransportPlugin, PluginMetadata, PluginConfig, ToolCallOptions } from '../../types/plugin.js';
 import { TOOL_CALL_TIMEOUTS } from '../../types/plugin.js';
 import { createLogger } from '@extension/shared/lib/logger';
+import { getSessionId } from '../../utils/session-store.js';
 
 
 const logger = createLogger('StreamableHttpPlugin');
@@ -18,10 +19,18 @@ export class StreamableHttpPlugin implements ITransportPlugin {
   };
 
   private transport: Transport | null = null;
+  /** Session pool key (from plugin config) used to persist/resume Mcp-Session-Id */
+  private sessionKey: string | null = null;
+  /** True when the last created transport resumed a previously stored session */
+  private resumedSession = false;
 
   async initialize(config: PluginConfig): Promise<void> {
     // Configuration can be used for future enhancements
     logger.debug(`Initialized with config:`, config);
+    const sessionKey = (config as { sessionKey?: string } | undefined)?.sessionKey;
+    if (typeof sessionKey === 'string' && sessionKey.length > 0) {
+      this.sessionKey = sessionKey;
+    }
   }
 
   async connect(uri: string): Promise<Transport> {
@@ -44,8 +53,19 @@ export class StreamableHttpPlugin implements ITransportPlugin {
       const url = new URL(uri);
       logger.debug(`Creating Streamable HTTP transport for: ${url.toString()}`);
 
-      // Create streamable HTTP transport
-      const transport = new StreamableHTTPClientTransport(url);
+      // If we persisted a Mcp-Session-Id for this session key (e.g. after a
+      // service-worker restart), construct the transport with it. The MCP SDK
+      // then skips the initialize handshake and resumes the existing session.
+      let transport: StreamableHTTPClientTransport;
+      const savedSessionId = this.sessionKey ? await getSessionId(this.sessionKey) : null;
+      if (savedSessionId) {
+        logger.debug(`[StreamableHttpPlugin] Resuming stored MCP session for key '${this.sessionKey}'`);
+        transport = new StreamableHTTPClientTransport(url, { sessionId: savedSessionId });
+        this.resumedSession = true;
+      } else {
+        transport = new StreamableHTTPClientTransport(url);
+        this.resumedSession = false;
+      }
 
       // Return the transport without testing
       // The main client will handle the connection test

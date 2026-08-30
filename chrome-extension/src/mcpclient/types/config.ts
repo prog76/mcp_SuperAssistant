@@ -35,6 +35,11 @@ export interface StreamableHttpPluginConfig extends PluginConfig {
 export interface ClientConfig {
   defaultTransport: TransportType;
   defaultUri: string;
+  /**
+   * Session pool key for this client instance (e.g. 'global' or 'tab-<id>').
+   * Used to persist/resume the streamable-HTTP Mcp-Session-Id per key.
+   */
+  sessionKey?: string;
   plugins: {
     sse?: SSEPluginConfig;
     websocket?: WebSocketPluginConfig;

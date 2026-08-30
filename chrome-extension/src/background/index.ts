@@ -11,6 +11,8 @@ import {
   getPromptWithBackwardsCompatibility,
   resetMcpConnectionState,
   resetMcpConnectionStateForRecovery,
+  resetAllMcpConnectionState,
+  disconnectMcpSession,
   normalizeToolsFromPrimitives as normalizeTools,
   createMcpClient,
   type TransportType,
@@ -690,6 +692,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+// Tear down the per-tab MCP session when its tab closes, so the server-side
+// session (Mcp-Session-Id) isn't leaked for tabs/chats the user already left.
+chrome.tabs.onRemoved.addListener(tabId => {
+  const sessionKey = `tab-${tabId}`;
+  disconnectMcpSession(sessionKey).catch(error => {
+    logger.error(`[Background] Failed to clean up MCP session for ${sessionKey}:`, error);
+  });
+});
+
 /**
  * Compaction archive message handling (transcript/summary large-text read/write to extension-origin IndexedDB).
  */
@@ -743,7 +754,11 @@ async function handleMcpMessage(
     let result: any = null;
     const payload = message.payload || {};
 
-    logger.debug(`Processing MCP message: ${messageType}`);
+    // Per-tab MCP sessions: each tab (chat) gets its own client/session key so
+    // streamable-HTTP servers hand out a separate Mcp-Session-Id per tab.
+    const sessionKey = sender.tab?.id != null ? `tab-${sender.tab.id}` : 'global';
+
+    logger.debug(`Processing MCP message: ${messageType} (session: ${sessionKey})`);
 
     switch (messageType) {
       case 'mcp:call-tool': {
@@ -786,7 +801,7 @@ async function handleMcpMessage(
           }
         };
 
-        result = await callToolWithBackwardsCompatibility(getServerUrl(), toolName, args || {}, adapterName, undefined, { onProgress });
+        result = await callToolWithBackwardsCompatibility(getServerUrl(), toolName, args || {}, adapterName, undefined, { onProgress }, sessionKey);
 
         if (lastProgressAt > 0) {
           logger.debug(`Tool call completed (with keep-alive progress): ${toolName}`);
@@ -900,6 +915,7 @@ async function handleMcpMessage(
           // ENHANCED: Reset connection state before attempting reconnection
           // This ensures we don't get blocked by consecutive failure limits
           resetMcpConnectionState();
+          await resetAllMcpConnectionState();
           
           // Set a reasonable timeout for the reconnection process
           const reconnectionPromise = forceReconnectToMcpServer(getServerUrl(), connectionType);
@@ -993,6 +1009,7 @@ async function handleMcpMessage(
         const reconnectPromise = (async () => {
           try {
             logger.debug('[Background] Starting async reconnection after config update...');
+            await resetAllMcpConnectionState();
             await forceReconnectToMcpServer(config.uri, newType);
             const isConnected = await checkMcpServerConnection();
             updateConnectionStatus(isConnected);
