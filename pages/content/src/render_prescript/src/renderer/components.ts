@@ -103,6 +103,122 @@ const websiteName = window.location.hostname
   .replace(/^www\./i, '')
   .split('.')[0];
 
+// ================================================================
+// Content-type aware helpers for MCP CallToolResult.content
+// Used to decide attach-vs-context and to build real binary files
+// with sensible names / MIME types instead of the legacy .txt bundle.
+// ================================================================
+
+const MIME_TO_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+  'image/bmp': 'bmp',
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/ogg': 'ogg',
+  'audio/webm': 'webm',
+  'audio/mp4': 'm4a',
+  'application/pdf': 'pdf',
+  'application/json': 'json',
+  'application/zip': 'zip',
+  'application/gzip': 'gz',
+  'application/octet-stream': 'bin',
+  'text/csv': 'csv',
+  'text/plain': 'txt',
+  'text/html': 'html',
+  'text/markdown': 'md',
+};
+
+/** Last non-empty path segment of a URI, URL-decoded. */
+function basenameFromUri(uri?: string): string {
+  if (!uri) return '';
+  try {
+    const cleaned = uri.split('?')[0].split('#')[0].replace(/\/+$/, '');
+    const seg = cleaned.split('/').pop() || '';
+    return decodeURIComponent(seg).trim();
+  } catch {
+    return '';
+  }
+}
+
+/** Map a MIME type to a file extension ('' if unknown). */
+function mimeToExt(mimeType?: string): string {
+  if (!mimeType) return '';
+  const lower = mimeType.toLowerCase().split(';')[0].trim();
+  return MIME_TO_EXT[lower] || '';
+}
+
+/**
+ * Derive a file name + mime type for one MCP content block.
+ * Priority: resource.uri basename > mimeType-derived extension + generated base > generated default.
+ */
+function deriveFileName(
+  resourceUri: string | undefined,
+  mimeType: string | undefined,
+  fallbackBase: string,
+): { name: string; mimeType: string } {
+  const base = basenameFromUri(resourceUri);
+  const mime = (mimeType || 'application/octet-stream').toLowerCase().split(';')[0].trim();
+  const ext = mimeToExt(mime) || 'bin';
+
+  let name: string;
+  if (base && base.includes('.') && !base.endsWith('.')) {
+    name = base; // uri carries an explicit extension — trust it
+  } else if (base) {
+    name = `${base}.${ext}`; // append derived extension
+  } else {
+    name = `${fallbackBase}.${ext}`;
+  }
+  return { name, mimeType: mime || 'application/octet-stream' };
+}
+
+/** Decode a base64 string into a Uint8Array (browser-safe, no Buffer). */
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/**
+ * Inspect a CallToolResult and build a File[] for every binary content block
+ * (image/audio `data`, and embedded blob resources). Returns [] when only text.
+ */
+function extractBinaryFilesFromResult(result: any, functionName: string, callId: string): File[] {
+  if (!result || !Array.isArray(result.content)) return [];
+  const files: File[] = [];
+  const fallbackBase = `${functionName}_result_call_id_${callId}`;
+
+  result.content.forEach((item: any, idx: number) => {
+    const type = item?.type;
+    const mime = item?.mimeType;
+    const nameCfg = deriveFileName(
+      type === 'resource' ? item?.resource?.uri : undefined,
+      mime,
+      `${fallbackBase}_${idx}`,
+    );
+
+    if (type === 'image' && item.data) {
+      files.push(new File([base64ToBytes(item.data)], nameCfg.name, { type: nameCfg.mimeType }));
+    } else if (type === 'audio' && item.data) {
+      files.push(new File([base64ToBytes(item.data)], nameCfg.name, { type: nameCfg.mimeType }));
+    } else if (type === 'resource' && item.resource?.blob) {
+      files.push(new File([base64ToBytes(item.resource.blob)], nameCfg.name, { type: nameCfg.mimeType }));
+    }
+    // `resource` with `text` is plain text → stays in context, handled by the text path.
+  });
+
+  return files;
+}
+
 // Pre-compiled regexes for better performance
 const INVOKE_REGEX = /<invoke name="([^"]+)"(?:\s+call_id="([^"]+)")?>/;
 
@@ -1244,6 +1360,116 @@ const attachResultAsFile = async (
 };
 
 /**
+ * Attach one or more binary files (already-built File objects with proper
+ * names / MIME types) via the adapter's attachFile method, insert a short
+ * confirmation, and dispatch per-file events for the automation service.
+ * Events are dispatched with skipAutoInsertCheck=true to avoid double-attach.
+ */
+const attachBinaryFiles = async (
+  adapter: any,
+  files: File[],
+  button: HTMLButtonElement,
+  skipAutoInsertCheck: boolean = false,
+): Promise<{ success: boolean; message: string | null }> => {
+  if (!adapter) {
+    logger.error('No adapter provided for binary file attachment.');
+    return { success: false, message: null };
+  }
+  if (!adapterSupportsCapability('file-attachment')) {
+    logger.error('Current adapter does not support file attachment.');
+    return { success: false, message: null };
+  }
+  if (!files || files.length === 0) {
+    return { success: false, message: null };
+  }
+
+  const names = files.map(f => f.name);
+  const confirmationText = `File${files.length > 1 ? 's' : ''} attached successfully: ${names.join(', ')}`;
+
+  const setState = (text: string, className?: string, disabled: boolean = true) => {
+    button.innerHTML = '';
+    const iconElement = createOptimizedElement('span', {
+      innerHTML: ICONS.ATTACH,
+      styles: { display: 'inline-flex', marginRight: '6px' },
+    });
+    const textElement = createOptimizedElement('span', { textContent: text });
+    button.appendChild(iconElement);
+    button.appendChild(textElement);
+    button.disabled = disabled;
+    if (className) button.classList.add(className);
+  };
+
+  const resetState = (delay: number = 2000) => {
+    setTimeout(() => {
+      button.innerHTML = `${ICONS.ATTACH}<span>Attach File</span>`;
+      button.classList.remove('attach-success', 'attach-error');
+      button.disabled = false;
+    }, delay);
+  };
+
+  const dispatchEvents = () => {
+    files.forEach(file => {
+      requestAnimationFrame(() => {
+        document.dispatchEvent(
+          new CustomEvent('mcp:tool-execution-complete', {
+            detail: {
+              file,
+              result: confirmationText,
+              isFileAttachment: true,
+              fileName: file.name,
+              confirmationText,
+              skipAutoInsertCheck,
+            },
+          }),
+        );
+      });
+    });
+  };
+
+  try {
+    setState('Attaching...');
+
+    if (typeof adapter.attachFile === 'function') {
+      let attached = 0;
+      for (const file of files) {
+        const ok = await adapter.attachFile(file);
+        if (ok) attached++;
+      }
+      if (attached > 0) {
+        setState('Attached!', 'attach-success', true);
+        if (typeof adapter.insertText === 'function') {
+          try {
+            await adapter.insertText(confirmationText);
+          } catch (insertError) {
+            logger.warn('Failed to insert binary attachment confirmation text:', insertError);
+          }
+        }
+        dispatchEvents();
+        resetState();
+        return { success: true, message: confirmationText };
+      }
+    }
+
+    // Optimistic fallback for adapters without a functional attachFile
+    setState('Attached!', 'attach-success', true);
+    if (typeof adapter.insertText === 'function') {
+      try {
+        await adapter.insertText(confirmationText);
+      } catch (insertError) {
+        logger.warn('Failed to insert binary attachment confirmation text:', insertError);
+      }
+    }
+    dispatchEvents();
+    resetState();
+    return { success: true, message: confirmationText };
+  } catch (e) {
+    logger.error('Binary file attachment error:', e);
+    setState('Failed', 'attach-error', true);
+    return { success: false, message: null };
+  }
+};
+
+/**
  * Optimized result display with efficient DOM operations and batch processing
  * Performance improvements: reduce DOM queries, batch operations, efficient element creation
  *
@@ -1318,6 +1544,10 @@ export const displayResult = (
   if (success) {
     // Optimized success result processing
     let rawResultText = '';
+    // Binary content blocks (image/audio data + blob resources) are attached as
+    // files rather than pasted into context. Text content stays in context.
+    const binaryFiles = extractBinaryFilesFromResult(result, functionName, callId);
+    let hasRealText = false;
 
     // Create result content efficiently
     const resultContent = createOptimizedElement('div', {
@@ -1336,7 +1566,12 @@ export const displayResult = (
 
           if (textParts.length > 0) {
             rawResultText = textParts.join('\n');
+            hasRealText = true;
             resultContent.textContent = rawResultText;
+          } else if (binaryFiles.length > 0) {
+            // Binary-only result — don't paste a JSON/base64 blob into the panel.
+            resultContent.textContent =
+              `${binaryFiles.length} file(s) ready to attach:\n` + binaryFiles.map(f => `• ${f.name}`).join('\n');
           } else {
             // Fallback to full JSON if no text content found
             rawResultText = JSON.stringify(result, null, 2);
@@ -1445,6 +1680,28 @@ export const displayResult = (
       }
 
       const wrapperText = `<function_result call_id="${callId}">\n${rawResultText}\n</function_result>`;
+
+      // If the result carries binary content blocks (image/audio data, blob
+      // resources), attach them as properly-named files, then insert any
+      // accompanying text into context.
+      if (binaryFiles.length > 0 && adapterSupportsCapability('file-attachment')) {
+        const res = await attachBinaryFiles(
+          adapter,
+          binaryFiles,
+          insertButton,
+          true,
+        );
+        if (res.success) {
+          if (hasRealText && typeof adapter.insertText === 'function') {
+            try {
+              await adapter.insertText(wrapperText);
+            } catch (insertError) {
+              logger.warn('Failed to insert accompanying text:', insertError);
+            }
+          }
+          return;
+        }
+      }
 
       // Check result length and handle accordingly
       if (rawResultText.length > MAX_INSERT_LENGTH && WEBSITE_NAME_FOR_MAX_INSERT_LENGTH_CHECK.includes(websiteName)) {
@@ -1619,14 +1876,21 @@ export const displayResult = (
     fragment.appendChild(buttonContainer);
     resultsPanel.parentNode?.insertBefore(fragment, resultsPanel.nextSibling);
 
-    // Handle auto-attachment for large results
-    if (
-      rawResultText.length > MAX_INSERT_LENGTH &&
-      adapter &&
-      adapterSupportsCapability('file-attachment') &&
-      WEBSITE_NAME_FOR_MAX_INSERT_LENGTH_CHECK.includes(websiteName)
-    ) {
-      logger.debug(`Auto-attaching file: Result length (${rawResultText.length}) exceeds ${MAX_INSERT_LENGTH}`);
+    // Handle auto-attachment: when the result carries binary content blocks,
+    // or when a very large text result exceeds the limit on supported sites.
+    const shouldAutoAttach =
+      binaryFiles.length > 0
+        ? !!adapter && adapterSupportsCapability('file-attachment')
+        : rawResultText.length > MAX_INSERT_LENGTH &&
+          adapter &&
+          adapterSupportsCapability('file-attachment') &&
+          WEBSITE_NAME_FOR_MAX_INSERT_LENGTH_CHECK.includes(websiteName);
+    if (shouldAutoAttach) {
+      logger.debug(
+        binaryFiles.length > 0
+          ? `Auto-attaching ${binaryFiles.length} binary file(s) from result content`
+          : `Auto-attaching file: Result length (${rawResultText.length}) exceeds ${MAX_INSERT_LENGTH}`,
+      );
 
       // Create efficient fake button for auto-attachment
       const fakeElements = {
@@ -1636,7 +1900,12 @@ export const displayResult = (
         }) as HTMLButtonElement,
       };
 
-      attachResultAsFile(adapter, functionName, callId, rawResultText, fakeElements.button, null, true) // Set to true to prevent double attachment
+      const autoAttachPromise =
+        binaryFiles.length > 0
+          ? attachBinaryFiles(adapter, binaryFiles, fakeElements.button, true)
+          : attachResultAsFile(adapter, functionName, callId, rawResultText, fakeElements.button, null, true); // Set to true to prevent double attachment
+
+      autoAttachPromise
         .then(async ({ success, message }) => {
           if (success && message) {
             logger.debug(`Auto-attached file successfully: ${message}`);
