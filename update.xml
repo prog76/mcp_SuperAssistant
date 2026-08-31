@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<gupdate xmlns='http://www.google.com/update2/update' protocol='2.0'>
+  <app appid='LGYVQ1Jy_mALcY6y9PAch2lY7fiN5Sz7'>
+    <updatecheck codebase='https://github.com/prog76/mcp_SuperAssistant/releases/download/v0.7.6/extension.crx' version='0.7.6' />
+  </app>
+</gupdate>

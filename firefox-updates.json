@@ -1,0 +1,13 @@
+{
+  "addons": {
+    "prog76@mcpsuperassistant.ai": {
+      "updates": [
+        {
+          "version": "0.7.6",
+          "update_link": "https://github.com/prog76/mcp_SuperAssistant/releases/download/v0.7.6/extension-firefox.xpi",
+          "update_hash": "sha256:4ac72eb5db1334d1c4dbd254e18a3cb7db990a5d188ef97f37441f74c4a1ace5"
+        }
+      ]
+    }
+  }
+}
